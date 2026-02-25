@@ -317,7 +317,8 @@ export function AgentManagerView({
       {confirmDeleteId && (
         <div
           style={{
-            position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+            backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
             display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000,
           }}
           onClick={() => setConfirmDeleteId(null)}
@@ -371,7 +372,8 @@ export function AgentManagerView({
       {editorOpen && (
         <div
           style={{
-            position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)",
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+            backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
             display: "flex", justifyContent: "flex-end", zIndex: 1000,
           }}
           onClick={closeEditor}

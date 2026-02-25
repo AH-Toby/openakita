@@ -48,6 +48,7 @@ type QueuedMessage = {
   id: string;
   text: string;
   timestamp: number;
+  convId: string;
 };
 
 // ─── 从后端 chain_summary 重建前端 ChainGroup ───
@@ -969,7 +970,9 @@ function SlashCommandPanel({
         border: "1px solid var(--line)",
         borderRadius: 14,
         background: "var(--panel2)",
-        boxShadow: "0 -12px 48px rgba(17,24,39,0.12)",
+        backdropFilter: "blur(16px)",
+        WebkitBackdropFilter: "blur(16px)",
+        boxShadow: "0 -12px 48px rgba(17,24,39,0.18)",
         zIndex: 100,
       }}
     >
@@ -983,8 +986,8 @@ function SlashCommandPanel({
             display: "flex",
             alignItems: "center",
             gap: 10,
-            background: idx === selectedIdx ? "rgba(14,165,233,0.08)" : "transparent",
-            borderTop: idx === 0 ? "none" : "1px solid rgba(17,24,39,0.06)",
+            background: idx === selectedIdx ? "rgba(14,165,233,0.14)" : "transparent",
+            borderTop: idx === 0 ? "none" : "1px solid rgba(17,24,39,0.1)",
           }}
         >
           <span style={{ fontSize: 16, opacity: 0.7, display: "inline-flex", alignItems: "center" }}>
@@ -1422,6 +1425,113 @@ function FlatMessageItem({
   );
 }
 
+// ─── Sub-Agent Progress Cards ───
+
+type SubAgentTaskDisplay = {
+  agent_id: string;
+  profile_id: string;
+  session_id: string;
+  name: string;
+  icon: string;
+  status: "starting" | "running" | "completed" | "error" | "timeout" | "cancelled";
+  iteration: number;
+  tools_executed: string[];
+  tools_total: number;
+  elapsed_s: number;
+  last_progress_s: number;
+  started_at: number;
+};
+
+function SubAgentCards({ tasks }: { tasks: SubAgentTaskDisplay[] }) {
+  const { t } = useTranslation();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 4;
+  const totalPages = Math.ceil(tasks.length / PAGE_SIZE);
+  const visible = tasks.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  const statusLabel = (s: string) => {
+    switch (s) {
+      case "starting": return t("chat.subAgentStarting", "启动中");
+      case "running": return t("chat.subAgentRunning", "执行中");
+      case "completed": return t("chat.subAgentDone", "已完成");
+      case "error": return t("chat.subAgentError", "出错");
+      case "timeout": return t("chat.subAgentTimeout", "超时");
+      case "cancelled": return t("chat.subAgentCancelled", "已取消");
+      default: return s;
+    }
+  };
+
+  const statusClass = (s: string) => {
+    switch (s) {
+      case "starting":
+      case "running": return "sacBadgeRunning";
+      case "completed": return "sacBadgeDone";
+      case "error": return "sacBadgeError";
+      case "timeout": return "sacBadgeTimeout";
+      default: return "";
+    }
+  };
+
+  const formatElapsed = (s: number) => {
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m}m${sec > 0 ? sec + "s" : ""}`;
+  };
+
+  return (
+    <div className="sacContainer">
+      <div className="sacHeader">
+        <span className="sacTitle">{t("chat.subAgentPanel", "子 Agent 进度")}</span>
+        {totalPages > 1 && (
+          <div className="sacPager">
+            <button className="sacPageBtn" disabled={page <= 0} onClick={() => setPage(p => p - 1)}>‹</button>
+            <span className="sacPageInfo">{page + 1}/{totalPages}</span>
+            <button className="sacPageBtn" disabled={page >= totalPages - 1} onClick={() => setPage(p => p + 1)}>›</button>
+          </div>
+        )}
+      </div>
+      <div className="sacGrid" ref={scrollRef}>
+        {visible.map((task) => (
+          <div key={task.agent_id} className={`sacCard ${task.status === "running" || task.status === "starting" ? "sacCardActive" : ""}`}>
+            <div className="sacCardTop">
+              <span className="sacIcon">{task.icon}</span>
+              <span className="sacName">{task.name}</span>
+              <span className={`sacBadge ${statusClass(task.status)}`}>
+                {(task.status === "running" || task.status === "starting") && <span className="sacPulse" />}
+                {statusLabel(task.status)}
+              </span>
+            </div>
+            <div className="sacCardMeta">
+              <span>{t("chat.subAgentIter", "迭代")} {task.iteration}</span>
+              <span className="sacDot">·</span>
+              <span>{formatElapsed(task.elapsed_s)}</span>
+              <span className="sacDot">·</span>
+              <span>{t("chat.subAgentTools", "工具")} ×{task.tools_total}</span>
+            </div>
+            <div className="sacToolList">
+              {task.tools_executed.length === 0 && (
+                <div className="sacToolItem sacToolWaiting">…</div>
+              )}
+              {task.tools_executed.map((tool, idx) => {
+                const isCurrent = idx === task.tools_executed.length - 1 && (task.status === "running" || task.status === "starting");
+                return (
+                  <div key={`${tool}-${idx}`} className={`sacToolItem ${isCurrent ? "sacToolCurrent" : ""}`}>
+                    <span className="sacToolArrow">{isCurrent ? "▸" : "▹"}</span>
+                    <span className="sacToolName">{tool}</span>
+                    {isCurrent && <span className="sacToolBlink" />}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── 主组件 ───
 
 export function ChatView({
@@ -1468,11 +1578,7 @@ export function ChatView({
   const [inputText, setInputText] = useState("");
   const [selectedEndpoint, setSelectedEndpoint] = useState("auto");
   const [planMode, setPlanMode] = useState(false);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const streamingConvIdRef = useRef<string | null>(null);
-  const liveMessagesCache = useRef<Map<string, ChatMessage[]>>(new Map());
-  const messagesSnapshotRef = useRef<ChatMessage[]>(messages);
-  const isCurrentConvStreaming = isStreaming && streamingConvIdRef.current === activeConvId;
+  const [streamingTick, setStreamingTick] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [convSearchQuery, setConvSearchQuery] = useState("");
   const [orbitTip, setOrbitTip] = useState<{ x: number; y: number; name: string; title: string } | null>(null);
@@ -1514,9 +1620,40 @@ export function ChatView({
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const agentMenuRef = useRef<HTMLDivElement | null>(null);
 
-  // Track active sub-agents in the current conversation (populated via agent_handoff events)
   type SubAgentEntry = { agentId: string; status: "delegating" | "done" | "error"; reason?: string; startTime: number };
-  const [activeSubAgents, setActiveSubAgents] = useState<SubAgentEntry[]>([]);
+  const [displayActiveSubAgents, setDisplayActiveSubAgents] = useState<SubAgentEntry[]>([]);
+
+  // Sub-agent progress cards (populated via polling /api/agents/sub-tasks)
+  type SubAgentTask = {
+    agent_id: string;
+    profile_id: string;
+    session_id: string;
+    name: string;
+    icon: string;
+    status: "starting" | "running" | "completed" | "error" | "timeout" | "cancelled";
+    iteration: number;
+    tools_executed: string[];
+    tools_total: number;
+    elapsed_s: number;
+    last_progress_s: number;
+    started_at: number;
+  };
+  const [displaySubAgentTasks, setDisplaySubAgentTasks] = useState<SubAgentTask[]>([]);
+
+  // ── Per-session streaming context (supports concurrent streams) ──
+  type StreamContext = {
+    abort: AbortController;
+    reader: ReadableStreamDefaultReader<Uint8Array> | null;
+    isStreaming: boolean;
+    messages: ChatMessage[];
+    activeSubAgents: SubAgentEntry[];
+    subAgentTasks: SubAgentTask[];
+    isDelegating: boolean;
+    pollingTimer: ReturnType<typeof setInterval> | null;
+  };
+  const streamContexts = useRef<Map<string, StreamContext>>(new Map());
+  const activeConvIdRef = useRef(activeConvId);
+  const isCurrentConvStreaming = streamContexts.current.get(activeConvId ?? "")?.isStreaming ?? false;
 
   const updateConvStatus = useCallback((convId: string, status: ConversationStatus) => {
     setConversations((prev) =>
@@ -1564,6 +1701,7 @@ export function ChatView({
   }, [conversations]);
 
   useEffect(() => {
+    activeConvIdRef.current = activeConvId;
     try {
       if (activeConvId) localStorage.setItem(STORAGE_KEY_ACTIVE, activeConvId);
       else localStorage.removeItem(STORAGE_KEY_ACTIVE);
@@ -1577,20 +1715,17 @@ export function ChatView({
     return () => clearInterval(iv);
   }, []);
 
-  // ── 持久化消息（流式结束后 debounce 写入，避免高频写入） ──
+  // ── 持久化消息（流式中由 StreamContext 管理，finally 一次性写入） ──
   const saveMessagesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!activeConvId) return;
-    // 流式传输中时延迟保存，减少写入频率
+    if (streamContexts.current.get(activeConvId)?.isStreaming) return;
     if (saveMessagesTimerRef.current) clearTimeout(saveMessagesTimerRef.current);
-    const delay = isStreaming ? 2000 : 300;
     saveMessagesTimerRef.current = setTimeout(() => {
       try {
-        // 保存时过滤掉 streaming 状态的瞬态字段，减小体积
         const toSave = messages.map(({ streaming, ...rest }) => rest);
         localStorage.setItem(STORAGE_KEY_MSGS_PREFIX + activeConvId, JSON.stringify(toSave));
       } catch {
-        // localStorage quota exceeded: 清理最旧的对话消息
         try {
           const convs: ChatConversation[] = JSON.parse(localStorage.getItem(STORAGE_KEY_CONVS) || "[]");
           if (convs.length > 1) {
@@ -1599,37 +1734,25 @@ export function ChatView({
           }
         } catch { /* give up */ }
       }
-    }, delay);
+    }, 300);
     return () => { if (saveMessagesTimerRef.current) clearTimeout(saveMessagesTimerRef.current); };
-  }, [messages, activeConvId, isStreaming]);
+  }, [messages, activeConvId, streamingTick]);
 
-  // Keep a ref that always points to latest messages; also sync to live cache if streaming
-  useEffect(() => {
-    messagesSnapshotRef.current = messages;
-    const sId = streamingConvIdRef.current;
-    if (sId && activeConvId === sId) {
-      liveMessagesCache.current.set(sId, messages);
-    }
-  }, [messages, activeConvId]);
+  // (messagesSnapshotRef / liveMessagesCache removed — StreamContext manages live messages)
 
   // ── 切换对话时加载对应消息 ──
   const prevConvIdRef = useRef<string | null>(activeConvId);
-  const skipConvLoadRef = useRef(false); // sendMessage 创建新对话时跳过加载
+  const skipConvLoadRef = useRef(false);
   useEffect(() => {
     if (activeConvId && activeConvId !== prevConvIdRef.current) {
-      // Switching away from a streaming conversation — snapshot live messages
-      const leavingId = prevConvIdRef.current;
-      if (leavingId && streamingConvIdRef.current === leavingId) {
-        liveMessagesCache.current.set(leavingId, messagesSnapshotRef.current);
-      }
-
       if (skipConvLoadRef.current) {
         skipConvLoadRef.current = false;
       } else {
-        // Switching to a streaming conversation — restore live snapshot (preserves streaming flag)
-        const cached = liveMessagesCache.current.get(activeConvId);
-        if (cached && streamingConvIdRef.current === activeConvId) {
-          setMessages(cached);
+        const ctx = streamContexts.current.get(activeConvId);
+        if (ctx?.isStreaming) {
+          setMessages(ctx.messages);
+          setDisplayActiveSubAgents(ctx.activeSubAgents);
+          setDisplaySubAgentTasks(ctx.subAgentTasks);
         } else {
           try {
             const raw = localStorage.getItem(STORAGE_KEY_MSGS_PREFIX + activeConvId);
@@ -1656,6 +1779,8 @@ export function ChatView({
               }
             }
           } catch { setMessages([]); }
+          setDisplayActiveSubAgents([]);
+          setDisplaySubAgentTasks([]);
         }
       }
       isInitialScrollRef.current = true;
@@ -1665,14 +1790,12 @@ export function ChatView({
       }
     }
     prevConvIdRef.current = activeConvId;
-    setActiveSubAgents([]);
   }, [activeConvId, serviceRunning, apiBaseUrl, multiAgentEnabled, conversations]);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const isInitialScrollRef = useRef(true); // first scroll should be instant, not smooth
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
+  // abortRef/readerRef removed — now per-session in StreamContext
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Fetch initial context size on mount / when service starts
@@ -1781,7 +1904,7 @@ export function ChatView({
   // ── 消息补全：用后端数据修复 localStorage 中不完整的消息（中断的流式传输等）──
   const patchedConvsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!serviceRunning || !activeConvId || isStreaming) return;
+    if (!serviceRunning || !activeConvId || isCurrentConvStreaming) return;
     if (patchedConvsRef.current.has(activeConvId)) return;
 
     const hasIncomplete = messages.some(
@@ -1803,7 +1926,7 @@ export function ChatView({
       })
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serviceRunning, activeConvId, isStreaming, apiBaseUrl, messages.length]);
+  }, [serviceRunning, activeConvId, streamingTick, apiBaseUrl, messages.length]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -1821,14 +1944,15 @@ export function ChatView({
     return data.url as string;  // 后端返回 { url: "/api/uploads/<filename>" }
   }, [apiBase]);
 
-  // ── 组件卸载清理：abort 流式请求 + 停止麦克风 ──
+  // ── 组件卸载清理：abort 所有流式请求 + 停止麦克风 ──
   useEffect(() => {
     return () => {
-      // 终止正在进行的 SSE 流式请求，避免内存泄漏和 React 状态更新警告
-      abortRef.current?.abort();
-      readerRef.current?.cancel().catch(() => {});
-      readerRef.current = null;
-      // 停止录音并释放麦克风
+      for (const [, ctx] of streamContexts.current) {
+        try { ctx.abort.abort(); } catch {}
+        try { ctx.reader?.cancel().catch(() => {}); } catch {}
+        if (ctx.pollingTimer) clearInterval(ctx.pollingTimer);
+      }
+      streamContexts.current.clear();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         try { mediaRecorderRef.current.stop(); } catch { /* ignore */ }
       }
@@ -1873,7 +1997,7 @@ export function ChatView({
 
   // ── 思维链: 流式结束后自动折叠 ──
   useEffect(() => {
-    if (!isStreaming && messages.some(m => m.thinkingChain?.length)) {
+    if (!isCurrentConvStreaming && messages.some(m => m.thinkingChain?.length)) {
       const timer = setTimeout(() => {
         setMessages(prev => prev.map(m => ({
           ...m,
@@ -1882,7 +2006,8 @@ export function ChatView({
       }, 1500);
       return () => clearTimeout(timer);
     }
-  }, [isStreaming]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCurrentConvStreaming, streamingTick]);
 
   // ── 点击外部关闭模型菜单 ──
   useEffect(() => {
@@ -1986,25 +2111,17 @@ export function ChatView({
   // ── 新建对话 ──
   const newConversation = useCallback(() => {
     const id = genId();
-    // 先保存当前对话消息（如果有）
     if (activeConvId && messages.length > 0) {
       try {
         const toSave = messages.map(({ streaming, ...rest }) => rest);
         localStorage.setItem(STORAGE_KEY_MSGS_PREFIX + activeConvId, JSON.stringify(toSave));
       } catch {}
     }
-    // Abort any active streaming so the new conversation starts clean
-    if (isStreaming) {
-      try { abortRef.current?.abort(); } catch {}
-      try { readerRef.current?.cancel().catch(() => {}); } catch {}
-      readerRef.current = null;
-      abortRef.current = null;
-      setIsStreaming(false);
-      streamingConvIdRef.current = null;
-    }
     setActiveConvId(id);
     setMessages([]);
     setPendingAttachments([]);
+    setDisplayActiveSubAgents([]);
+    setDisplaySubAgentTasks([]);
     setConversations((prev) => [{
       id,
       title: "新对话",
@@ -2013,22 +2130,20 @@ export function ChatView({
       messageCount: 0,
       agentProfileId: multiAgentEnabled ? selectedAgent : undefined,
     }, ...prev]);
-  }, [activeConvId, messages, multiAgentEnabled, selectedAgent, isStreaming]);
+  }, [activeConvId, messages, multiAgentEnabled, selectedAgent]);
 
   // ── 删除对话 ──
   const deleteConversation = useCallback((convId: string, e?: React.MouseEvent) => {
     if (e) { e.stopPropagation(); e.preventDefault(); }
-    // 从 localStorage 删除该对话的消息
     try { localStorage.removeItem(STORAGE_KEY_MSGS_PREFIX + convId); } catch {}
-    // If deleting the conversation that's streaming, abort and reset streaming state
-    if (streamingConvIdRef.current === convId) {
-      try { abortRef.current?.abort(); } catch {}
-      try { readerRef.current?.cancel().catch(() => {}); } catch {}
-      readerRef.current = null;
-      abortRef.current = null;
-      setIsStreaming(false);
-      streamingConvIdRef.current = null;
-      liveMessagesCache.current.delete(convId);
+    setMessageQueue(prev => prev.filter(m => m.convId !== convId));
+    const ctx = streamContexts.current.get(convId);
+    if (ctx) {
+      try { ctx.abort.abort(); } catch {}
+      try { ctx.reader?.cancel().catch(() => {}); } catch {}
+      if (ctx.pollingTimer) clearInterval(ctx.pollingTimer);
+      streamContexts.current.delete(convId);
+      setStreamingTick(t => t + 1);
     }
     // 如果删除的是当前激活的对话，切换到下一个或清空
     if (convId === activeConvId) {
@@ -2071,11 +2186,14 @@ export function ChatView({
     setRenameText("");
   }, []);
 
-  // ── 发送消息（overrideText 用于 ask_user 回复等场景，绕过 inputText） ──
-  const sendMessage = useCallback(async (overrideText?: string) => {
+  // ── 发送消息（overrideText 用于 ask_user 回复等场景，绕过 inputText；targetConvId 用于自动出队等需要指定目标会话的场景） ──
+  const sendMessage = useCallback(async (overrideText?: string, targetConvId?: string) => {
     const text = (overrideText ?? inputText).trim();
     if (!text && pendingAttachments.length === 0) return;
-    if (isCurrentConvStreaming) return;
+
+    const resolvedConvId = targetConvId || activeConvId;
+    const targetIsStreaming = resolvedConvId ? !!streamContexts.current.get(resolvedConvId)?.isStreaming : false;
+    if (targetIsStreaming) return;
 
     // 斜杠命令处理
     if (text.startsWith("/")) {
@@ -2108,13 +2226,10 @@ export function ChatView({
       timestamp: Date.now(),
     };
 
-    let convId = activeConvId;
+    let convId = resolvedConvId;
 
-    setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInputText("");
     setPendingAttachments([]);
-    setIsStreaming(true);
-    streamingConvIdRef.current = convId ?? null;
     setSlashOpen(false);
     if (!convId) {
       convId = genId();
@@ -2133,19 +2248,70 @@ export function ChatView({
       updateConvStatus(convId, "running");
     }
 
+    const thisConvId = convId!;
+
     // SSE 流式请求
     const abort = new AbortController();
-    abortRef.current = abort;
 
-    // 空闲超时：如果 IDLE_TIMEOUT_MS 内没有收到任何数据则放弃
-    // （每次收到数据后重置计时器，不影响长对话）
-    const IDLE_TIMEOUT_MS = 300_000; // 5 minutes idle (backend sends heartbeats every 15s)
+    // Build per-session StreamContext with initial messages
+    const fallbackMessages = thisConvId === activeConvId ? [...messages] : (() => {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY_MSGS_PREFIX + thisConvId);
+        return raw ? JSON.parse(raw) as ChatMessage[] : [];
+      } catch { return []; }
+    })();
+    const sctx: StreamContext = {
+      abort,
+      reader: null,
+      isStreaming: true,
+      messages: [...fallbackMessages, userMsg, assistantMsg],
+      activeSubAgents: [],
+      subAgentTasks: [],
+      isDelegating: false,
+      pollingTimer: null,
+    };
+    streamContexts.current.set(thisConvId, sctx);
+    // Functional updater chains with any pending setMessages (e.g. handleAskAnswer's answered flag)
+    if (thisConvId === activeConvIdRef.current) {
+      setMessages((prev) => {
+        const updated = [...prev, userMsg, assistantMsg];
+        sctx.messages = updated;
+        return updated;
+      });
+    } else {
+      setMessages(sctx.messages);
+    }
+    setStreamingTick(t => t + 1);
+
+    // ── Per-session helpers: write to StreamContext, sync to screen only if active ──
+    const updateMessages = (updater: (msgs: ChatMessage[]) => ChatMessage[]) => {
+      const c = streamContexts.current.get(thisConvId);
+      if (!c) return;
+      c.messages = updater(c.messages);
+      if (activeConvIdRef.current === thisConvId) setMessages(c.messages);
+    };
+    const updateSubAgents = (
+      agentsUpdater?: (prev: SubAgentEntry[]) => SubAgentEntry[],
+      tasksUpdater?: (prev: SubAgentTask[]) => SubAgentTask[],
+    ) => {
+      const c = streamContexts.current.get(thisConvId);
+      if (!c) return;
+      if (agentsUpdater) c.activeSubAgents = agentsUpdater(c.activeSubAgents);
+      if (tasksUpdater) c.subAgentTasks = tasksUpdater(c.subAgentTasks);
+      if (activeConvIdRef.current === thisConvId) {
+        if (agentsUpdater) setDisplayActiveSubAgents(c.activeSubAgents);
+        if (tasksUpdater) setDisplaySubAgentTasks(c.subAgentTasks);
+      }
+    };
+
+    const IDLE_TIMEOUT_MS = 300_000;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     const resetIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
         abort.abort();
-        readerRef.current?.cancel().catch(() => {});
+        const c = streamContexts.current.get(thisConvId);
+        c?.reader?.cancel().catch(() => {});
       }, IDLE_TIMEOUT_MS);
     };
 
@@ -2181,11 +2347,10 @@ export function ChatView({
 
       if (!response.ok) {
         const errText = await response.text().catch(() => "请求失败");
-        setMessages((prev) => prev.map((m) =>
+        updateMessages((prev) => prev.map((m) =>
           m.id === assistantMsg.id ? { ...m, content: `错误：${response.status} ${errText}`, streaming: false } : m
         ));
-        setIsStreaming(false);
-        if (convId) updateConvStatus(convId, "error");
+        if (thisConvId) updateConvStatus(thisConvId, "error");
         return;
       }
 
@@ -2195,7 +2360,7 @@ export function ChatView({
       // 处理 SSE 流
       const reader = response.body?.getReader();
       if (!reader) throw new Error("No response body");
-      readerRef.current = reader;
+      sctx.reader = reader;
 
       const decoder = new TextDecoder();
       let buffer = "";
@@ -2289,7 +2454,7 @@ export function ChatView({
               case "user_insert": {
                 const insertContent = (event.content || "").trim();
                 if (insertContent) {
-                  setMessages((prev) => {
+                  updateMessages((prev) => {
                     const assistantIdx = prev.findIndex((m) => m.id === assistantMsg.id);
                     const existingIdx = prev.findIndex(
                       (m) => m.role === "user" && m.content === insertContent && Date.now() - m.timestamp < 10000
@@ -2305,13 +2470,13 @@ export function ChatView({
 
                     if (existingIdx >= 0) return prev;
 
-                    const userMsg = { id: genId(), role: "user" as const, content: insertContent, timestamp: Date.now() };
+                    const uMsg = { id: genId(), role: "user" as const, content: insertContent, timestamp: Date.now() };
                     if (assistantIdx >= 0) {
                       const newArr = [...prev];
-                      newArr.splice(assistantIdx, 0, userMsg);
+                      newArr.splice(assistantIdx, 0, uMsg);
                       return newArr;
                     }
-                    return [...prev, userMsg];
+                    return [...prev, uMsg];
                   });
                 }
                 continue;
@@ -2388,18 +2553,16 @@ export function ChatView({
                 currentContent += event.content;
                 break;
               case "tool_call_start": {
-                // Eagerly add sub-agent when delegate_to_agent starts
                 if (event.tool === "delegate_to_agent" && event.args?.agent_id) {
                   const targetId = String(event.args.agent_id);
-                  setActiveSubAgents((prev) => {
+                  updateSubAgents((prev) => {
                     const exists = prev.find((s) => s.agentId === targetId);
                     if (exists) return prev.map((s) => s.agentId === targetId ? { ...s, status: "delegating", startTime: Date.now() } : s);
                     return [...prev, { agentId: targetId, status: "delegating" as const, reason: String(event.args.reason || ""), startTime: Date.now() }];
-                  });
+                  }, undefined);
                 }
-                // Eagerly add all sub-agents when delegate_parallel starts
                 if (event.tool === "delegate_parallel" && Array.isArray(event.args?.tasks)) {
-                  setActiveSubAgents((prev) => {
+                  updateSubAgents((prev) => {
                     let updated = [...prev];
                     for (const task of event.args.tasks as Array<{ agent_id?: string; reason?: string }>) {
                       if (!task.agent_id) continue;
@@ -2412,9 +2575,28 @@ export function ChatView({
                       }
                     }
                     return updated;
-                  });
+                  }, undefined);
                 }
-                
+
+                // Per-session polling for sub-agent progress
+                if ((event.tool === "delegate_to_agent" || event.tool === "delegate_parallel") && !sctx.isDelegating) {
+                  sctx.isDelegating = true;
+                  if (sctx.pollingTimer) clearInterval(sctx.pollingTimer);
+                  const doFetch = () => {
+                    fetch(`${apiBase}/api/agents/sub-tasks?conversation_id=${encodeURIComponent(thisConvId)}`)
+                      .then((r) => r.ok ? r.json() : [])
+                      .then((data: SubAgentTask[]) => {
+                        if (!Array.isArray(data)) return;
+                        const c = streamContexts.current.get(thisConvId);
+                        if (c) c.subAgentTasks = data;
+                        if (activeConvIdRef.current === thisConvId) setDisplaySubAgentTasks(data);
+                      })
+                      .catch(() => {});
+                  };
+                  doFetch();
+                  sctx.pollingTimer = setInterval(doFetch, 3000);
+                }
+
                 currentToolCalls = [...currentToolCalls, { tool: event.tool, args: event.args, status: "running", id: event.id }];
                 const _tcId = event.id || genId();
                 const _desc = formatToolDescription(event.tool, event.args);
@@ -2431,12 +2613,22 @@ export function ChatView({
                 break;
               }
               case "tool_call_end": {
-                // Mark sub-agent as done/error when delegate completes
                 if (event.tool === "delegate_to_agent" || event.tool === "delegate_parallel") {
                   const isErr = event.is_error === true || (event.result || "").startsWith("❌");
-                  setActiveSubAgents((prev) => prev.map((s) =>
+                  updateSubAgents((prev) => prev.map((s) =>
                     s.status === "delegating" ? { ...s, status: isErr ? "error" : "done" } : s
-                  ));
+                  ), undefined);
+                  sctx.isDelegating = false;
+                  if (sctx.pollingTimer) { clearInterval(sctx.pollingTimer); sctx.pollingTimer = null; }
+                  fetch(`${apiBase}/api/agents/sub-tasks?conversation_id=${encodeURIComponent(thisConvId)}`)
+                    .then((r) => r.ok ? r.json() : [])
+                    .then((data: SubAgentTask[]) => {
+                      if (!Array.isArray(data)) return;
+                      const c = streamContexts.current.get(thisConvId);
+                      if (c) c.subAgentTasks = data;
+                      if (activeConvIdRef.current === thisConvId) setDisplaySubAgentTasks(data);
+                    })
+                    .catch(() => {});
                 }
                 // Refresh profiles when a new agent is created
                 if (event.tool === "create_agent" && !(event.is_error || (event.result || "").startsWith("❌"))) {
@@ -2486,9 +2678,7 @@ export function ChatView({
               }
               case "plan_created":
                 currentPlan = event.plan;
-                // 新 Plan 创建时，将之前消息中的旧 Plan 标记为 completed，
-                // 避免浮动进度条显示已过时的旧 Plan
-                setMessages((prev) => prev.map((m) =>
+                updateMessages((prev) => prev.map((m) =>
                   m.plan && m.plan.status !== "completed" && m.plan.status !== "failed" && m.plan.status !== "cancelled"
                     ? { ...m, plan: { ...m.plan, status: "completed" as const } }
                     : m
@@ -2560,25 +2750,25 @@ export function ChatView({
                 const fromProfile = agentProfiles.find((p) => p.id === event.from_agent);
                 const toName = toProfile ? `${toProfile.icon} ${toProfile.name}` : event.to_agent;
                 const fromName = fromProfile ? `${fromProfile.icon} ${fromProfile.name}` : event.from_agent;
-                setMessages((prev) => [
+                updateMessages((prev) => [
                   ...prev,
                   {
                     id: genId(),
-                    role: "system",
+                    role: "system" as const,
                     content: `🔄 **${fromName}** 委派任务给 **${toName}**${event.reason ? `\n> ${event.reason}` : ""}`,
                     timestamp: Date.now(),
                   },
                 ]);
-                setActiveSubAgents((prev) => {
+                updateSubAgents((prev) => {
                   const exists = prev.find((s) => s.agentId === event.to_agent);
                   if (exists) return prev.map((s) => s.agentId === event.to_agent ? { ...s, status: "delegating", startTime: Date.now() } : s);
-                  return [...prev, { agentId: event.to_agent, status: "delegating", reason: event.reason, startTime: Date.now() }];
-                });
+                  return [...prev, { agentId: event.to_agent, status: "delegating" as const, reason: event.reason, startTime: Date.now() }];
+                }, undefined);
                 break;
               }
               case "agent_switch":
                 currentAgent = event.agentName;
-                setMessages((prev) => {
+                updateMessages((prev) => {
                   const switchMsg: ChatMessage = {
                     id: genId(),
                     role: "system",
@@ -2612,8 +2802,7 @@ export function ChatView({
                 if (currentPlan && currentPlan.status === "in_progress") {
                   currentPlan = { ...(currentPlan as ChatPlan), status: "completed" as const };
                 }
-                // 同时清理之前消息中遗留的旧 Plan（防止浮动进度条显示过时 Plan）
-                setMessages((prev) => {
+                updateMessages((prev) => {
                   const hasStaleplan = prev.some((m) => m.id !== assistantMsg.id && m.plan && m.plan.status !== "completed" && m.plan.status !== "failed" && m.plan.status !== "cancelled");
                   if (!hasStaleplan) return prev;
                   return prev.map((m) =>
@@ -2626,7 +2815,7 @@ export function ChatView({
             }
 
             // 更新助手消息
-            setMessages((prev) => prev.map((m) =>
+            updateMessages((prev) => prev.map((m) =>
               m.id === assistantMsg.id
                 ? {
                     ...m,
@@ -2652,80 +2841,80 @@ export function ChatView({
 
       // ── 循环结束后：判断是正常完成还是被用户中止 ──
       if (abort.signal.aborted) {
-        // 用户点击了停止（或空闲超时触发 abort）
-        setMessages((prev) => prev.map((m) =>
+        updateMessages((prev) => prev.map((m) =>
           m.id === assistantMsg.id
             ? { ...m, content: m.content || "（已中止）", streaming: false }
             : m
         ));
       } else {
-        // 正常完成流式
-        setMessages((prev) => prev.map((m) =>
+        updateMessages((prev) => prev.map((m) =>
           m.id === assistantMsg.id ? { ...m, streaming: false } : m
         ));
       }
     } catch (e: unknown) {
-      // ── 兼容多种 abort 错误形式 ──
-      // Chromium/WebView2: DOMException { name: "AbortError" }
-      // 某些环境: Error { name: "AbortError" }
-      // 安全检查: abort.signal.aborted 为 true
       const isAbort =
         abort.signal.aborted ||
         (e instanceof DOMException && e.name === "AbortError") ||
         (e instanceof Error && e.name === "AbortError");
 
       if (isAbort) {
-        setMessages((prev) => prev.map((m) =>
+        updateMessages((prev) => prev.map((m) =>
           m.id === assistantMsg.id ? { ...m, content: m.content || "（已中止）", streaming: false } : m
         ));
       } else {
         const errMsg = e instanceof Error ? e.message : String(e);
-        setMessages((prev) => prev.map((m) =>
+        updateMessages((prev) => prev.map((m) =>
           m.id === assistantMsg.id ? { ...m, content: `连接失败：${errMsg}\n\n请确认后台服务（openakita serve）已启动，且 HTTP API 端口（18900）可访问。`, streaming: false } : m
         ));
       }
     } finally {
       if (idleTimer) clearTimeout(idleTimer);
-      // 确保 reader 被释放
-      try { readerRef.current?.cancel().catch(() => {}); } catch { /* ignore */ }
-      readerRef.current = null;
-      setIsStreaming(false);
-      streamingConvIdRef.current = null;
-      if (convId) liveMessagesCache.current.delete(convId);
-      abortRef.current = null;
-
-      if (convId) {
-        setConversations((prev) => {
-          const updated = prev.map((c) =>
-            c.id === convId
-              ? { ...c, lastMessage: text.slice(0, 60), timestamp: Date.now(), messageCount: (c.messageCount || 0) + 2, status: "completed" as ConversationStatus }
-              : c
-          );
-          // AI 标题生成：第一轮对话完成后异步请求
-          const conv = updated.find((c) => c.id === convId);
-          if (conv && !conv.titleGenerated && (conv.messageCount || 0) <= 2) {
-            (async () => {
-              try {
-                const res = await fetch(`${apiBase}/api/sessions/generate-title`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ message: text }),
-                  signal: AbortSignal.timeout(15000),
-                });
-                if (res.ok) {
-                  const data = await res.json();
-                  if (data.title) {
-                    setConversations((p) => p.map((c) =>
-                      c.id === convId ? { ...c, title: data.title, titleGenerated: true } : c
-                    ));
-                  }
-                }
-              } catch { /* fallback: keep truncated title */ }
-            })();
-          }
-          return updated;
-        });
+      const ctx = streamContexts.current.get(thisConvId);
+      if (ctx) {
+        ctx.isStreaming = false;
+        try { ctx.reader?.cancel().catch(() => {}); } catch {}
+        ctx.reader = null;
+        if (ctx.pollingTimer) { clearInterval(ctx.pollingTimer); ctx.pollingTimer = null; }
+        try {
+          const toSave = ctx.messages.map(({ streaming, ...rest }) => rest);
+          localStorage.setItem(STORAGE_KEY_MSGS_PREFIX + thisConvId, JSON.stringify(toSave));
+        } catch {}
+        if (activeConvIdRef.current === thisConvId) {
+          setMessages(ctx.messages);
+        }
+        streamContexts.current.delete(thisConvId);
       }
+      setStreamingTick(t => t + 1);
+
+      setConversations((prev) => {
+        const updated = prev.map((c) =>
+          c.id === thisConvId
+            ? { ...c, lastMessage: text.slice(0, 60), timestamp: Date.now(), messageCount: (c.messageCount || 0) + 2, status: "completed" as ConversationStatus }
+            : c
+        );
+        const conv = updated.find((c) => c.id === thisConvId);
+        if (conv && !conv.titleGenerated && (conv.messageCount || 0) <= 2) {
+          (async () => {
+            try {
+              const res = await fetch(`${apiBase}/api/sessions/generate-title`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: text }),
+                signal: AbortSignal.timeout(15000),
+              });
+              if (res.ok) {
+                const data = await res.json();
+                if (data.title) {
+                  setConversations((p) => p.map((c) =>
+                    c.id === thisConvId ? { ...c, title: data.title, titleGenerated: true } : c
+                  ));
+                }
+              }
+            } catch { /* fallback: keep truncated title */ }
+          })();
+        }
+        return updated;
+      });
     }
   }, [inputText, pendingAttachments, isCurrentConvStreaming, activeConvId, planMode, selectedEndpoint, apiBase, slashCommands, thinkingMode, thinkingDepth]);
 
@@ -2736,19 +2925,20 @@ export function ChatView({
         ? { ...m, askUser: { ...m.askUser, answered: true, answer } }
         : m
     ));
-    // reason_stream 在 ask_user 后中断流，用户回复通过新 /api/chat 请求继续处理
-    // 直接通过 sendMessage(overrideText) 发送，无需等待 state 更新
     sendMessage(answer);
   }, [sendMessage]);
 
   // ── 停止生成 ──
-  const stopStreaming = useCallback(() => {
-    // 1. Abort fetch 请求（触发 AbortError）
-    abortRef.current?.abort();
-    // 2. 显式取消 reader（某些浏览器/WebView 下 abort 不会立即终止 reader.read()）
-    try { readerRef.current?.cancel().catch(() => {}); } catch { /* ignore */ }
-    readerRef.current = null;
-  }, []);
+  const stopStreaming = useCallback((targetConvId?: string) => {
+    const id = targetConvId ?? activeConvId;
+    if (!id) return;
+    const ctx = streamContexts.current.get(id);
+    if (ctx) {
+      ctx.abort.abort();
+      try { ctx.reader?.cancel().catch(() => {}); } catch {}
+      ctx.reader = null;
+    }
+  }, [activeConvId]);
 
   // ── 消息排队系统 ──
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
@@ -2763,15 +2953,15 @@ export function ChatView({
   }, [apiBase, activeConvId]);
 
   const handleCancelTask = useCallback(() => {
-    // 只通知后端取消，不断开 SSE 连接。
-    // 后端会通过 SSE 流发送 LLM 收尾文本 + done 事件，前端自然结束。
     fetch(`${apiBase}/api/chat/cancel`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_id: activeConvId, reason: "用户从界面取消任务" }),
     }).then(() => {
-      // 兜底：如果 8 秒后 SSE 还没结束（后端卡住），强制断开
-      setTimeout(() => { if (readerRef.current) stopStreaming(); }, 8000);
+      const cid = activeConvId;
+      setTimeout(() => {
+        if (cid && streamContexts.current.get(cid)?.reader) stopStreaming(cid);
+      }, 8000);
     }).catch(() => {
       stopStreaming();
     });
@@ -2779,16 +2969,19 @@ export function ChatView({
 
   const handleInsertMessage = useCallback((text: string) => {
     if (!text.trim()) return;
-    setMessages((prev) => {
-      const userMsg = { id: genId(), role: "user" as const, content: text.trim(), timestamp: Date.now() };
+    const inserter = (prev: ChatMessage[]) => {
+      const uMsg = { id: genId(), role: "user" as const, content: text.trim(), timestamp: Date.now() };
       const streamingIdx = prev.findIndex((m) => m.role === "assistant" && m.streaming);
       if (streamingIdx >= 0) {
         const newArr = [...prev];
-        newArr.splice(streamingIdx, 0, userMsg);
+        newArr.splice(streamingIdx, 0, uMsg);
         return newArr;
       }
-      return [...prev, userMsg];
-    });
+      return [...prev, uMsg];
+    };
+    const ctx = activeConvId ? streamContexts.current.get(activeConvId) : null;
+    if (ctx) ctx.messages = inserter(ctx.messages);
+    setMessages(inserter);
     fetch(`${apiBase}/api/chat/insert`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2798,14 +2991,14 @@ export function ChatView({
 
   const handleQueueMessage = useCallback(() => {
     const text = inputText.trim();
-    if (!text) return;
-    setMessageQueue(prev => [...prev, { id: genId(), text, timestamp: Date.now() }]);
+    if (!text || !activeConvId) return;
+    setMessageQueue(prev => [...prev, { id: genId(), text, timestamp: Date.now(), convId: activeConvId }]);
     setInputText("");
     if (inputRef.current) {
       inputRef.current.value = "";
       inputRef.current.style.height = "auto";
     }
-  }, [inputText]);
+  }, [inputText, activeConvId]);
 
   const handleRemoveQueued = useCallback((id: string) => {
     setMessageQueue(prev => prev.filter(m => m.id !== id));
@@ -2840,17 +3033,35 @@ export function ChatView({
     });
   }, []);
 
-  // ── 排队消息自动出队：isStreaming 变 false 时自动取第一条执行 ──
-  const autoDequeueRef = useRef(false);
+  // ── 排队消息自动出队 ──
+  // 后端支持并发流式 — 每会话独立 Agent 实例。
+  // 排队仅限同会话：某会话流结束时，出队该会话排队的下一条消息。
+  const prevStreamingSetRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!isStreaming && autoDequeueRef.current && messageQueue.length > 0) {
-      const next = messageQueue[0];
-      setMessageQueue(prev => prev.slice(1));
-      // 延迟一小段时间确保 streaming 状态完全清理
-      setTimeout(() => sendMessage(next.text), 100);
+    const currentStreamingSet = new Set(
+      [...streamContexts.current.entries()].filter(([, c]) => c.isStreaming).map(([id]) => id),
+    );
+    if (messageQueue.length === 0) {
+      prevStreamingSetRef.current = currentStreamingSet;
+      return;
     }
-    autoDequeueRef.current = isStreaming;
-  }, [isStreaming, messageQueue, sendMessage]);
+    for (const finishedId of prevStreamingSetRef.current) {
+      if (!currentStreamingSet.has(finishedId)) {
+        const nextIdx = messageQueue.findIndex(m => m.convId === finishedId);
+        if (nextIdx >= 0) {
+          const next = messageQueue[nextIdx];
+          setMessageQueue(prev => prev.filter((_, i) => i !== nextIdx));
+          const targetId = next.convId;
+          setTimeout(() => {
+            sendMessage(next.text, targetId);
+          }, 100);
+          break;
+        }
+      }
+    }
+    prevStreamingSetRef.current = currentStreamingSet;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamingTick, messageQueue, sendMessage]);
 
   // ── 文件/图片上传 ──
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3124,11 +3335,10 @@ export function ChatView({
     }
 
     if (isCurrentConvStreaming) {
-      // Streaming 状态:
-      //   有文本 + Ctrl+Enter = 立即插入
+      // 当前会话正在流式传输:
+      //   有文本 + Ctrl+Enter = 立即插入（仅当前会话流式时可用）
       //   有文本 + Enter     = 排队
       //   空文本 + Enter     = 取队列第一条立即插入
-      // 用 DOM 真实值做前置检查，防止 React 闭包陈旧导致重复排队/插入
       const domText = (e.target as HTMLTextAreaElement).value.trim();
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -3141,15 +3351,16 @@ export function ChatView({
         e.preventDefault();
         if (domText) {
           handleQueueMessage();
-        } else if (messageQueue.length > 0) {
-          // 输入为空但队列有消息：取第一条立即插入
-          const first = messageQueue[0];
-          setMessageQueue(prev => prev.slice(1));
-          handleInsertMessage(first.text);
+        } else {
+          const myFirst = messageQueue.find(m => m.convId === activeConvId);
+          if (myFirst) {
+            setMessageQueue(prev => prev.filter(m => m.id !== myFirst.id));
+            handleInsertMessage(myFirst.text);
+          }
         }
       }
     } else {
-      // 非 Streaming 状态: Enter / Ctrl+Enter 都发送
+      // 非当前会话流式中: Enter / Ctrl+Enter 直接发送（后端支持并发）
       if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         sendMessage();
@@ -3158,7 +3369,7 @@ export function ChatView({
         sendMessage();
       }
     }
-  }, [slashOpen, slashFilter, slashCommands, slashSelectedIdx, sendMessage, isCurrentConvStreaming, inputText, handleInsertMessage, handleQueueMessage, messageQueue]);
+  }, [slashOpen, slashFilter, slashCommands, slashSelectedIdx, sendMessage, isCurrentConvStreaming, inputText, handleInsertMessage, handleQueueMessage, messageQueue, activeConvId]);
 
   // ── 输入变化处理 ──
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -3283,9 +3494,11 @@ export function ChatView({
               left: ctxMenu.x,
               top: ctxMenu.y,
               background: "var(--panel)",
+              backdropFilter: "blur(16px)",
+              WebkitBackdropFilter: "blur(16px)",
               border: "1px solid var(--line)",
               borderRadius: 10,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.22)",
               padding: "4px 0",
               minWidth: 140,
               fontSize: 13,
@@ -3360,7 +3573,7 @@ export function ChatView({
                   const pid = conv.agentProfileId || "default";
                   const ap = agentProfiles.find((p) => p.id === pid) ?? null;
                   const isActive = conv.id === activeConvId;
-                  const isRunning = conv.status === "running";
+                  const isRunning = conv.status === "running" || streamContexts.current.has(conv.id);
                   return (
                     <button
                       key={conv.id}
@@ -3383,10 +3596,10 @@ export function ChatView({
           )}
 
           {/* Active sub-agents in current conversation */}
-          {multiAgentEnabled && activeSubAgents.length > 0 && (
+          {multiAgentEnabled && displayActiveSubAgents.length > 0 && (
             <div className="subAgentStrip">
               <span className="subAgentLabel">协作中</span>
-              {activeSubAgents.map((sub) => {
+              {displayActiveSubAgents.map((sub) => {
                 const sp = agentProfiles.find((p) => p.id === sub.agentId);
                 return (
                   <div
@@ -3453,6 +3666,12 @@ export function ChatView({
               <MessageBubble key={msg.id} msg={msg} onAskAnswer={handleAskAnswer} apiBaseUrl={apiBaseUrl} showChain={showChain} onSkipStep={handleSkipStep} onImagePreview={(url, name) => setLightbox({ url, name })} />
             )
           )}
+
+          {/* Sub-agent progress cards */}
+          {multiAgentEnabled && displaySubAgentTasks.length > 0 && (
+            <SubAgentCards tasks={displaySubAgentTasks} />
+          )}
+
           <div ref={messagesEndRef} />
         </div>
 
@@ -3494,67 +3713,71 @@ export function ChatView({
             />
           )}
 
-          {/* Queued messages list — Cursor style */}
-          {messageQueue.length > 0 && (
-            <div className="queuedContainer">
-              <button
-                className="queuedHeader"
-                onClick={() => setQueueExpanded(v => !v)}
-              >
-                <span className="queuedHeaderChevron">
-                  {queueExpanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
-                </span>
-                <span className="queuedHeaderLabel">
-                  {messageQueue.length} {t("chat.queuedCount")}
-                </span>
-              </button>
-              {queueExpanded && (
-                <div className="queuedList">
-                  {messageQueue.map((qm, idx) => (
-                    <div key={qm.id} className="queuedItem">
-                      <span className="queuedItemIndicator">
-                        <IconCircle size={10} />
-                      </span>
-                      <span className="queuedItemText" title={qm.text}>
-                        {qm.text.length > 80 ? qm.text.slice(0, 80) + "..." : qm.text}
-                      </span>
-                      <div className="queuedItemActions">
-                        <button
-                          className="queuedItemBtn queuedItemSendBtn"
-                          onClick={() => handleSendQueuedNow(qm.id)}
-                          title={t("chat.sendNow")}
-                        >
-                          <IconSend size={12} />
-                        </button>
-                        <button
-                          className="queuedItemBtn"
-                          onClick={() => handleEditQueued(qm.id)}
-                          title={t("chat.editMessage")}
-                        >
-                          <IconEdit size={13} />
-                        </button>
-                        <button
-                          className="queuedItemBtn"
-                          onClick={() => handleMoveQueued(qm.id, "up")}
-                          disabled={idx === 0}
-                          title="Move up"
-                        >
-                          <IconChevronUp size={13} />
-                        </button>
-                        <button
-                          className="queuedItemBtn queuedItemDeleteBtn"
-                          onClick={() => handleRemoveQueued(qm.id)}
-                          title={t("chat.deleteQueued")}
-                        >
-                          <IconTrash size={13} />
-                        </button>
+          {/* Queued messages list — Cursor style, per-session */}
+          {(() => {
+            const currentQueue = messageQueue.filter(m => m.convId === activeConvId);
+            if (currentQueue.length === 0) return null;
+            return (
+              <div className="queuedContainer">
+                <button
+                  className="queuedHeader"
+                  onClick={() => setQueueExpanded(v => !v)}
+                >
+                  <span className="queuedHeaderChevron">
+                    {queueExpanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+                  </span>
+                  <span className="queuedHeaderLabel">
+                    {currentQueue.length} {t("chat.queuedCount")}
+                  </span>
+                </button>
+                {queueExpanded && (
+                  <div className="queuedList">
+                    {currentQueue.map((qm, idx) => (
+                      <div key={qm.id} className="queuedItem">
+                        <span className="queuedItemIndicator">
+                          <IconCircle size={10} />
+                        </span>
+                        <span className="queuedItemText" title={qm.text}>
+                          {qm.text.length > 80 ? qm.text.slice(0, 80) + "..." : qm.text}
+                        </span>
+                        <div className="queuedItemActions">
+                          <button
+                            className="queuedItemBtn queuedItemSendBtn"
+                            onClick={() => handleSendQueuedNow(qm.id)}
+                            title={t("chat.sendNow")}
+                          >
+                            <IconSend size={12} />
+                          </button>
+                          <button
+                            className="queuedItemBtn"
+                            onClick={() => handleEditQueued(qm.id)}
+                            title={t("chat.editMessage")}
+                          >
+                            <IconEdit size={13} />
+                          </button>
+                          <button
+                            className="queuedItemBtn"
+                            onClick={() => handleMoveQueued(qm.id, "up")}
+                            disabled={idx === 0}
+                            title="Move up"
+                          >
+                            <IconChevronUp size={13} />
+                          </button>
+                          <button
+                            className="queuedItemBtn queuedItemDeleteBtn"
+                            onClick={() => handleRemoveQueued(qm.id)}
+                            title={t("chat.deleteQueued")}
+                          >
+                            <IconTrash size={13} />
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           <div className={`chatInputBox ${planMode ? "chatInputBoxPlan" : ""}`}>
             {/* Top row: compact model picker */}
@@ -3870,14 +4093,15 @@ export function ChatView({
             <button
               title={t("chat.downloadImage") || "保存图片"}
               style={{
-                background: "rgba(255,255,255,0.15)", color: "#fff",
-                border: "1px solid rgba(255,255,255,0.2)", borderRadius: 8,
+                background: "rgba(255,255,255,0.25)", color: "#fff",
+                border: "1px solid rgba(255,255,255,0.35)", borderRadius: 8,
+                backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
                 width: 40, height: 40,
                 display: "flex", alignItems: "center", justifyContent: "center",
                 cursor: "pointer", transition: "background 0.15s",
               }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.3)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.15)"; }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.4)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.25)"; }}
               onClick={async (e) => {
                 e.stopPropagation();
                 try {
@@ -3895,14 +4119,15 @@ export function ChatView({
             </button>
             <button
               style={{
-                background: "rgba(255,255,255,0.15)", color: "#fff",
-                border: "1px solid rgba(255,255,255,0.2)", borderRadius: 8,
+                background: "rgba(255,255,255,0.25)", color: "#fff",
+                border: "1px solid rgba(255,255,255,0.35)", borderRadius: 8,
+                backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
                 width: 40, height: 40,
                 display: "flex", alignItems: "center", justifyContent: "center",
                 cursor: "pointer", transition: "background 0.15s",
               }}
-              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.3)"; }}
-              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.15)"; }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.4)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.25)"; }}
               onClick={(e) => { e.stopPropagation(); setLightbox(null); }}
             >
               <IconX size={18} />

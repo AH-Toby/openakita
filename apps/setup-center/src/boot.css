@@ -8,7 +8,7 @@ body {
   color-scheme: light;
   --boot-bg: #f4f5f7;
   --boot-grad: linear-gradient(180deg, #f7f8fb, #eef2ff);
-  --boot-card: rgba(255, 255, 255, 0.78);
+  --boot-card: rgba(255, 255, 255, 0.9);
   --boot-text: #111827;
   --boot-muted: rgba(17, 24, 39, 0.65);
   --boot-border: rgba(17, 24, 39, 0.12);
@@ -22,7 +22,7 @@ body {
   color-scheme: dark;
   --boot-bg: #09090b;
   --boot-grad: linear-gradient(180deg, #09090b, #18181b);
-  --boot-card: rgba(24, 24, 27, 0.78);
+  --boot-card: rgba(24, 24, 27, 0.9);
   --boot-text: rgba(255, 255, 255, 0.92);
   --boot-muted: rgba(255, 255, 255, 0.55);
   --boot-border: rgba(255, 255, 255, 0.12);

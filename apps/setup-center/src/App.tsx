@@ -10340,7 +10340,7 @@ export function App() {
 
         {/* ── Version mismatch banner ── */}
         {versionMismatch && (
-          <div style={{ position: "fixed", top: 48, left: "50%", transform: "translateX(-50%)", zIndex: 9999, background: "var(--panel2)", border: "1px solid var(--warning)", borderRadius: 10, padding: "12px 20px", maxWidth: 500, boxShadow: "var(--shadow)", display: "flex", flexDirection: "column", gap: 8, color: "var(--warning)" }}>
+          <div style={{ position: "fixed", top: 48, left: "50%", transform: "translateX(-50%)", zIndex: 9999, background: "var(--panel2)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", border: "1px solid var(--warning)", borderRadius: 10, padding: "12px 20px", maxWidth: 500, boxShadow: "var(--shadow)", display: "flex", flexDirection: "column", gap: 8, color: "var(--warning)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 16 }}>⚠️</span>
               <span style={{ fontWeight: 600, fontSize: 13 }}>{t("version.mismatch")}</span>
@@ -10360,7 +10360,7 @@ export function App() {
 
         {/* ── Update notification with download/install support ── */}
         {newRelease && (
-          <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 9998, background: "var(--panel2)", border: "1px solid var(--brand)", borderRadius: 10, padding: "12px 20px", maxWidth: 400, boxShadow: "var(--shadow)", display: "flex", flexDirection: "column", gap: 8, color: "var(--brand)" }}>
+          <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 9998, background: "var(--panel2)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", border: "1px solid var(--brand)", borderRadius: 10, padding: "12px 20px", maxWidth: 400, boxShadow: "var(--shadow)", display: "flex", flexDirection: "column", gap: 8, color: "var(--brand)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 16 }}>{updateProgress.status === "done" ? "✅" : updateProgress.status === "error" ? "❌" : "🎉"}</span>
               <span style={{ fontWeight: 600, fontSize: 13 }}>
