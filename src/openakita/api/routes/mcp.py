@@ -50,6 +50,20 @@ def _refresh_catalog_text(request: Request):
         agent._mcp_catalog_text = agent.mcp_catalog.generate_catalog()
 
 
+def _sync_tools_to_catalog(request: Request, server_name: str, client):
+    """连接成功后将运行时工具同步到 catalog 并刷新系统提示"""
+    catalog = _get_mcp_catalog(request)
+    tools = client.list_tools(server_name)
+    if catalog and tools:
+        tool_dicts = [
+            {"name": t.name, "description": t.description,
+             "input_schema": t.input_schema}
+            for t in tools
+        ]
+        catalog.sync_tools_from_client(server_name, tool_dicts, force=True)
+    _refresh_catalog_text(request)
+
+
 class MCPServerAddRequest(BaseModel):
     name: str
     transport: str = "stdio"
@@ -58,6 +72,7 @@ class MCPServerAddRequest(BaseModel):
     env: dict[str, str] = {}
     url: str = ""
     description: str = ""
+    auto_connect: bool = False
 
 
 class MCPConnectRequest(BaseModel):
@@ -132,29 +147,29 @@ async def connect_mcp_server(request: Request, body: MCPConnectRequest):
         return {"error": "Agent not initialized"}
 
     if body.server_name in client.list_connected():
-        return {"status": "already_connected", "server": body.server_name}
-
-    success = await client.connect(body.server_name)
-    if success:
         tools = client.list_tools(body.server_name)
+        return {
+            "status": "already_connected",
+            "server": body.server_name,
+            "tools": [{"name": t.name, "description": t.description} for t in tools],
+        }
 
-        catalog = _get_mcp_catalog(request)
-        if catalog and tools:
-            tool_dicts = [
-                {"name": t.name, "description": t.description,
-                 "input_schema": t.input_schema}
-                for t in tools
-            ]
-            catalog.sync_tools_from_client(body.server_name, tool_dicts)
-        _refresh_catalog_text(request)
-
+    result = await client.connect(body.server_name)
+    if result.success:
+        _sync_tools_to_catalog(request, body.server_name, client)
+        tools = client.list_tools(body.server_name)
         return {
             "status": "connected",
             "server": body.server_name,
             "tools": [{"name": t.name, "description": t.description} for t in tools],
+            "tool_count": result.tool_count,
         }
     else:
-        return {"status": "failed", "server": body.server_name, "error": "Connection failed"}
+        return {
+            "status": "failed",
+            "server": body.server_name,
+            "error": result.error or "连接失败（未知原因）",
+        }
 
 
 @router.post("/api/mcp/disconnect")
@@ -208,12 +223,16 @@ async def get_mcp_instructions(request: Request, server_name: str):
 @router.post("/api/mcp/servers/add")
 async def add_mcp_server(request: Request, body: MCPServerAddRequest):
     """Add a new MCP server config (persisted to workspace data/mcp/servers/)."""
+    from openakita.tools.mcp import VALID_TRANSPORTS
+
     if not body.name.strip():
-        return {"status": "error", "message": "Server name is required"}
+        return {"status": "error", "message": "服务器名称不能为空"}
+    if body.transport not in VALID_TRANSPORTS:
+        return {"status": "error", "message": f"不支持的传输协议: {body.transport}（支持: {', '.join(sorted(VALID_TRANSPORTS))}）"}
     if body.transport == "stdio" and not body.command.strip():
-        return {"status": "error", "message": "stdio transport requires a command"}
-    if body.transport == "streamable_http" and not body.url.strip():
-        return {"status": "error", "message": "streamable_http transport requires a url"}
+        return {"status": "error", "message": "stdio 模式需要填写启动命令"}
+    if body.transport in ("streamable_http", "sse") and not body.url.strip():
+        return {"status": "error", "message": f"{body.transport} 模式需要填写 URL"}
 
     from openakita.config import settings
 
@@ -229,6 +248,7 @@ async def add_mcp_server(request: Request, body: MCPServerAddRequest):
         "env": body.env,
         "transport": body.transport,
         "url": body.url,
+        "autoConnect": body.auto_connect,
     }
 
     metadata_file = server_dir / "SERVER_METADATA.json"
@@ -258,7 +278,22 @@ async def add_mcp_server(request: Request, body: MCPServerAddRequest):
 
     _refresh_catalog_text(request)
 
-    return {"status": "ok", "server": name, "path": str(server_dir)}
+    # 添加后尝试连接，获取工具信息
+    connect_result = None
+    if client:
+        result = await client.connect(name)
+        if result.success:
+            _sync_tools_to_catalog(request, name, client)
+            connect_result = {"connected": True, "tool_count": result.tool_count}
+        else:
+            connect_result = {"connected": False, "error": result.error}
+
+    return {
+        "status": "ok",
+        "server": name,
+        "path": str(server_dir),
+        "connect_result": connect_result,
+    }
 
 
 @router.delete("/api/mcp/servers/{server_name}")
@@ -270,7 +305,6 @@ async def remove_mcp_server(request: Request, server_name: str):
     if client and server_name in client.list_connected():
         await client.disconnect(server_name)
 
-    # Only allow removing workspace configs
     workspace_dir = settings.mcp_config_path / server_name
     builtin_dir = settings.mcp_builtin_path / server_name
 

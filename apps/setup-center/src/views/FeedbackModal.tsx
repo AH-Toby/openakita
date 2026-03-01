@@ -163,7 +163,10 @@ export function FeedbackModal({ open, onClose, apiBase, initialMode = "bug" }: F
       if (!res.ok) {
         const body = await res.text();
         let detail = "";
-        try { detail = JSON.parse(body).detail || body; } catch { detail = body; }
+        try {
+          const parsed = JSON.parse(body).detail;
+          detail = typeof parsed === "string" ? parsed : JSON.stringify(parsed) || body;
+        } catch { detail = body; }
         setSubmitResult({ ok: false, msg: `${res.status}: ${detail}` });
         return;
       }

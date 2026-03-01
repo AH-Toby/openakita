@@ -1087,9 +1087,7 @@ class Brain:
                 blocks.append({"type": "text", "text": text})
             elif block_type == "thinking":
                 thinking = getattr(block, "thinking", "") if not isinstance(block, dict) else block.get("thinking", "")
-                if isinstance(thinking, str) and len(thinking) > 500:
-                    thinking = thinking[:500] + "... (truncated)"
-                blocks.append({"type": "thinking", "thinking": str(thinking)[:550]})
+                blocks.append({"type": "thinking", "thinking": str(thinking)})
             elif block_type == "tool_use":
                 if isinstance(block, dict):
                     name = block.get("name", "")
@@ -1107,7 +1105,7 @@ class Brain:
                     "input": input_str,
                 })
             else:
-                blocks.append({"type": str(block_type), "raw": str(block)[:500]})
+                blocks.append({"type": str(block_type), "raw": str(block)})
 
         return blocks
 

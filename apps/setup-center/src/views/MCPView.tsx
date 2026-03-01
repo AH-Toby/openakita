@@ -27,12 +27,13 @@ type MCPServer = {
 
 type AddServerForm = {
   name: string;
-  transport: "stdio" | "streamable_http";
+  transport: "stdio" | "streamable_http" | "sse";
   command: string;
   args: string;
   env: string;
   url: string;
   description: string;
+  auto_connect: boolean;
 };
 
 const API_BASE = "http://127.0.0.1:18900";
@@ -45,6 +46,7 @@ const emptyForm: AddServerForm = {
   env: "",
   url: "",
   description: "",
+  auto_connect: false,
 };
 
 export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
@@ -137,7 +139,7 @@ export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
   const addServer = async () => {
     if (!form.name.trim()) { showMsg("请输入服务器名称", false); return; }
     if (form.transport === "stdio" && !form.command.trim()) { showMsg("stdio 模式需要填写启动命令", false); return; }
-    if (form.transport === "streamable_http" && !form.url.trim()) { showMsg("HTTP 模式需要填写 URL", false); return; }
+    if ((form.transport === "streamable_http" || form.transport === "sse") && !form.url.trim()) { showMsg(`${form.transport === "sse" ? "SSE" : "HTTP"} 模式需要填写 URL`, false); return; }
     setBusy("add");
     try {
       const envObj: Record<string, string> = {};
@@ -158,11 +160,18 @@ export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
           env: envObj,
           url: form.url.trim(),
           description: form.description.trim(),
+          auto_connect: form.auto_connect,
         }),
       });
       const data = await res.json();
       if (res.ok && data.status === "ok") {
-        showMsg(`已添加 ${form.name}`, true);
+        const cr = data.connect_result;
+        const connMsg = cr
+          ? cr.connected
+            ? `，已连接（${cr.tool_count} 个工具）`
+            : `，连接失败: ${cr.error || "未知"}`
+          : "";
+        showMsg(`已添加 ${form.name}${connMsg}`, cr?.connected !== false);
         setForm({ ...emptyForm });
         setShowAdd(false);
         await fetchServers();
@@ -267,9 +276,10 @@ export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
             </div>
             <div>
               <label className="label">传输协议</label>
-              <select className="input" value={form.transport} onChange={e => setForm({ ...form, transport: e.target.value as "stdio" | "streamable_http" })}>
+              <select className="input" value={form.transport} onChange={e => setForm({ ...form, transport: e.target.value as "stdio" | "streamable_http" | "sse" })}>
                 <option value="stdio">stdio (标准输入输出)</option>
                 <option value="streamable_http">Streamable HTTP</option>
+                <option value="sse">SSE (Server-Sent Events)</option>
               </select>
             </div>
             {form.transport === "stdio" ? (
@@ -286,7 +296,8 @@ export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
             ) : (
               <div>
                 <label className="label">URL *</label>
-                <input className="input" value={form.url} onChange={e => setForm({ ...form, url: e.target.value })} placeholder="如: http://127.0.0.1:12306/mcp" />
+                <input className="input" value={form.url} onChange={e => setForm({ ...form, url: e.target.value })}
+                  placeholder={form.transport === "sse" ? "如: http://127.0.0.1:8080/sse" : "如: http://127.0.0.1:12306/mcp"} />
               </div>
             )}
             <div style={{ gridColumn: "1 / -1" }}>
@@ -301,13 +312,19 @@ export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
               />
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end" }}>
-            <button className="btnSecondary" onClick={() => { setShowAdd(false); setForm({ ...emptyForm }); }} style={{ fontSize: 13, padding: "6px 16px" }}>
-              取消
-            </button>
-            <button className="btnPrimary" onClick={addServer} disabled={busy === "add"} style={{ fontSize: 13, padding: "6px 16px" }}>
-              {busy === "add" ? "添加中..." : "添加"}
-            </button>
+          <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "space-between", alignItems: "center" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--muted)", cursor: "pointer" }}>
+              <input type="checkbox" checked={form.auto_connect} onChange={e => setForm({ ...form, auto_connect: e.target.checked })} />
+              启动时自动连接
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btnSecondary" onClick={() => { setShowAdd(false); setForm({ ...emptyForm }); }} style={{ fontSize: 13, padding: "6px 16px" }}>
+                取消
+              </button>
+              <button className="btnPrimary" onClick={addServer} disabled={busy === "add"} style={{ fontSize: 13, padding: "6px 16px" }}>
+                {busy === "add" ? "添加中..." : "添加"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -341,7 +358,7 @@ export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
                   {s.connected ? <DotGreen /> : <DotGray />}
                   <span style={{ fontWeight: 600, fontSize: 14 }}>{s.name}</span>
                   <span style={{ fontSize: 12, color: "var(--muted)", background: "var(--bg-subtle, #f1f5f9)", padding: "1px 6px", borderRadius: 3 }}>
-                    {s.transport === "streamable_http" ? "HTTP" : "stdio"}
+                    {s.transport === "streamable_http" ? "HTTP" : s.transport === "sse" ? "SSE" : "stdio"}
                   </span>
                   <span style={{
                     fontSize: 11, padding: "1px 6px", borderRadius: 3,
@@ -396,8 +413,8 @@ export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
                 <div style={{ borderTop: "1px solid var(--line, #e5e7eb)", padding: "12px 16px" }}>
                   {/* Connection info */}
                   <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
-                    {s.transport === "streamable_http" ? (
-                      <span>URL: <code>{s.url}</code></span>
+                    {s.transport === "streamable_http" || s.transport === "sse" ? (
+                      <span>{s.transport === "sse" ? "SSE" : "HTTP"} URL: <code>{s.url}</code></span>
                     ) : (
                       <span>命令: <code>{s.command}</code></span>
                     )}
@@ -459,7 +476,7 @@ export function MCPView({ serviceRunning }: { serviceRunning: boolean }) {
       <div style={{ marginTop: 16, fontSize: 12, color: "var(--muted)", lineHeight: 1.8 }}>
         <strong>MCP (Model Context Protocol)</strong> 让 Agent 通过标准化协议调用外部工具和服务。
         <br />
-        支持两种传输协议：<code>stdio</code>（本地进程）和 <code>Streamable HTTP</code>（远程服务）。
+        支持三种传输协议：<code>stdio</code>（本地进程）、<code>Streamable HTTP</code>（远程服务）和 <code>SSE</code>（兼容旧版 MCP 服务器）。
         <br />
         内置配置位于 <code>mcps/</code> 目录，用户/AI 添加的配置保存在 <code>data/mcp/servers/</code> 目录，每个服务器一个子目录。
       </div>

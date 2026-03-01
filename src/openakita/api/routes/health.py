@@ -163,3 +163,4 @@ async def health_check(request: Request, body: HealthCheckRequest):
         results = list(await asyncio.gather(*tasks))
 
     return {"results": [r.model_dump() for r in results]}
+

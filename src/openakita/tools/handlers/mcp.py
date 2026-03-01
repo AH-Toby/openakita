@@ -77,9 +77,9 @@ class MCPHandler:
         arguments = params.get("arguments", {})
 
         if server not in self.agent.mcp_client.list_connected():
-            connected = await self.agent.mcp_client.connect(server)
-            if not connected:
-                return f"❌ 无法连接到 MCP 服务器: {server}"
+            result = await self.agent.mcp_client.connect(server)
+            if not result.success:
+                return f"❌ 无法连接到 MCP 服务器 {server}: {result.error}"
 
         result = await self.agent.mcp_client.call_tool(server, mcp_tool_name, arguments)
 
@@ -110,7 +110,6 @@ class MCPHandler:
             tools = self.agent.mcp_client.list_tools(server_id)
             tool_info = f" ({len(tools)} 工具)" if tools else ""
 
-            # 判断来源
             workspace_dir = settings.mcp_config_path / server_id
             source = "📁 工作区" if workspace_dir.exists() else "📦 内置"
             output += f"- **{server_id}** {status}{tool_info} [{source}]\n"
@@ -147,8 +146,8 @@ class MCPHandler:
         if server not in self.agent.mcp_client.list_servers():
             return f"❌ 服务器 {server} 未配置。请先用 add_mcp_server 添加或检查名称"
 
-        success = await self.agent.mcp_client.connect(server)
-        if success:
+        result = await self.agent.mcp_client.connect(server)
+        if result.success:
             tools = self.agent.mcp_client.list_tools(server)
             tool_names = [t.name for t in tools]
 
@@ -158,7 +157,7 @@ class MCPHandler:
                      "input_schema": t.input_schema}
                     for t in tools
                 ]
-                self.agent.mcp_catalog.sync_tools_from_client(server, tool_dicts)
+                self.agent.mcp_catalog.sync_tools_from_client(server, tool_dicts, force=True)
                 self.agent._mcp_catalog_text = self.agent.mcp_catalog.generate_catalog()
 
             return (
@@ -166,7 +165,10 @@ class MCPHandler:
                 f"发现 {len(tools)} 个工具: {', '.join(tool_names)}"
             )
         else:
-            return f"❌ 连接 MCP 服务器失败: {server}\n请检查服务器配置和网络连接"
+            return (
+                f"❌ 连接 MCP 服务器失败: {server}\n"
+                f"原因: {result.error}"
+            )
 
     async def _disconnect_server(self, params: dict) -> str:
         """断开 MCP 服务器"""
@@ -183,12 +185,16 @@ class MCPHandler:
     async def _add_server(self, params: dict) -> str:
         """添加 MCP 服务器配置到工作区"""
         from ...config import settings
+        from ..mcp import VALID_TRANSPORTS
 
         name = params.get("name", "").strip()
         if not name:
             return "❌ 服务器名称不能为空"
 
         transport = params.get("transport", "stdio")
+        if transport not in VALID_TRANSPORTS:
+            return f"❌ 不支持的传输协议: {transport}（支持: {', '.join(sorted(VALID_TRANSPORTS))}）"
+
         command = params.get("command", "")
         args = params.get("args", [])
         env = params.get("env", {})
@@ -199,10 +205,9 @@ class MCPHandler:
 
         if transport == "stdio" and not command:
             return "❌ stdio 模式需要指定 command 参数"
-        if transport == "streamable_http" and not url:
-            return "❌ streamable_http 模式需要指定 url 参数"
+        if transport in ("streamable_http", "sse") and not url:
+            return f"❌ {transport} 模式需要指定 url 参数"
 
-        # 写入到工作区 data/mcp/servers/{name}/
         server_dir = settings.mcp_config_path / name
         server_dir.mkdir(parents=True, exist_ok=True)
 
@@ -242,14 +247,34 @@ class MCPHandler:
             url=url,
         ))
 
+        # 添加后尝试连接并发现工具
+        connect_result = await self.agent.mcp_client.connect(name)
+        connect_msg = ""
+        if connect_result.success:
+            tools = self.agent.mcp_client.list_tools(name)
+            if tools:
+                tool_dicts = [
+                    {"name": t.name, "description": t.description,
+                     "input_schema": t.input_schema}
+                    for t in tools
+                ]
+                self.agent.mcp_catalog.sync_tools_from_client(name, tool_dicts, force=True)
+            tool_names = [t.name for t in tools]
+            connect_msg = f"\n\n✅ 已自动连接，发现 {len(tools)} 个工具: {', '.join(tool_names)}"
+        else:
+            connect_msg = (
+                f"\n\n⚠️ 自动连接失败: {connect_result.error}\n"
+                f"配置已保存，可稍后手动调用 `connect_mcp_server(\"{name}\")` 重试"
+            )
+
         # 刷新系统提示中的 MCP 清单
         self.agent._mcp_catalog_text = self.agent.mcp_catalog.generate_catalog()
 
         return (
             f"✅ 已添加 MCP 服务器: {name}\n"
             f"  传输: {transport}\n"
-            f"  配置路径: {server_dir}\n\n"
-            f"使用 `connect_mcp_server(\"{name}\")` 连接并发现工具"
+            f"  配置路径: {server_dir}"
+            f"{connect_msg}"
         )
 
     async def _remove_server(self, params: dict) -> str:
@@ -260,7 +285,6 @@ class MCPHandler:
         if not name:
             return "❌ 服务器名称不能为空"
 
-        # 只允许删除工作区中的配置
         server_dir = settings.mcp_config_path / name
         builtin_dir = settings.mcp_builtin_path / name
 
@@ -269,35 +293,38 @@ class MCPHandler:
                 return f"❌ {name} 是内置 MCP 服务器，不能删除。可在 .env 中禁用 MCP"
             return f"❌ 未找到 MCP 服务器: {name}"
 
-        # 先断开连接
         if name in self.agent.mcp_client.list_connected():
             await self.agent.mcp_client.disconnect(name)
 
-        # 删除配置文件
         shutil.rmtree(server_dir, ignore_errors=True)
 
-        # 从 client 中移除（服务器配置 + 残留工具索引）
         self.agent.mcp_client._servers.pop(name, None)
         self.agent.mcp_client._connections.pop(name, None)
         prefix = f"{name}:"
         for key in [k for k in self.agent.mcp_client._tools if k.startswith(prefix)]:
             del self.agent.mcp_client._tools[key]
 
-        # 从 catalog 中移除
         self.agent.mcp_catalog._servers = [
             s for s in self.agent.mcp_catalog._servers
             if s.identifier != name
         ]
         self.agent.mcp_catalog.invalidate_cache()
 
-        # 刷新系统提示
         self.agent._mcp_catalog_text = self.agent.mcp_catalog.generate_catalog()
 
         return f"✅ 已移除 MCP 服务器: {name}"
 
     async def _reload_servers(self, params: dict) -> str:
-        """重新加载所有 MCP 配置"""
-        # 断开所有连接
+        """重新加载所有 MCP 配置
+
+        直接操作全局共享的 mcp_client/mcp_catalog，避免在 pool agent
+        上调用 _load_mcp_servers()（那会触发 _start_builtin_mcp_servers 等
+        只应在 master agent 上执行的初始化逻辑）。
+        """
+        from ...config import settings
+        from ..mcp import MCPServerConfig
+
+        # 1) 断开所有连接
         connected = list(self.agent.mcp_client.list_connected())
         for server_name in connected:
             try:
@@ -305,7 +332,7 @@ class MCPHandler:
             except Exception as e:
                 logger.warning(f"Failed to disconnect {server_name}: {e}")
 
-        # 清空现有配置（含可能因断连失败而残留的连接）
+        # 2) 清空全局状态
         self.agent.mcp_client._connections.clear()
         self.agent.mcp_client._servers.clear()
         self.agent.mcp_client._tools.clear()
@@ -314,8 +341,39 @@ class MCPHandler:
         self.agent.mcp_catalog._servers.clear()
         self.agent.mcp_catalog.invalidate_cache()
 
-        # 重新加载
-        await self.agent._load_mcp_servers()
+        # 3) 重新扫描配置目录
+        total_count = 0
+        for dir_path in [
+            settings.mcp_builtin_path,
+            settings.project_root / ".mcp",
+            settings.mcp_config_path,
+        ]:
+            if dir_path.exists():
+                count = self.agent.mcp_catalog.scan_mcp_directory(dir_path)
+                if count > 0:
+                    total_count += count
+
+        # 4) 同步注册到 MCPClient
+        for server in self.agent.mcp_catalog.servers:
+            if not server.identifier:
+                continue
+            transport = server.transport or "stdio"
+            if transport == "stdio" and not server.command:
+                continue
+            if transport in ("streamable_http", "sse") and not server.url:
+                continue
+            self.agent.mcp_client.add_server(MCPServerConfig(
+                name=server.identifier,
+                command=server.command or "",
+                args=list(server.args or []),
+                env=dict(server.env or {}),
+                description=server.name or "",
+                transport=transport,
+                url=server.url or "",
+            ))
+
+        # 5) 刷新 catalog 文本
+        self.agent._mcp_catalog_text = self.agent.mcp_catalog.generate_catalog()
 
         catalog_count = self.agent.mcp_catalog.server_count
         client_count = len(self.agent.mcp_client.list_servers())

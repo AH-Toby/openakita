@@ -209,13 +209,17 @@ class ResponseHandler:
             return False
 
         # LLM 判断
+        from .tool_executor import smart_truncate
+        user_display, _ = smart_truncate(user_request, 3000, save_full=False, label="verify_user")
+        response_display, _ = smart_truncate(assistant_response, 8000, save_full=False, label="verify_response")
+
         verify_prompt = f"""请判断以下交互是否已经**完成**用户的意图。
 
 ## 用户消息
-{user_request[:2000]}
+{user_display}
 
 ## 助手响应
-{assistant_response[:4000]}
+{response_display}
 
 ## 已执行的工具
 {", ".join(executed_tools) if executed_tools else "无"}
@@ -373,15 +377,19 @@ NEXT: 建议的下一步"""
     @staticmethod
     def get_last_user_request(messages: list[dict]) -> str:
         """获取最后一条用户请求"""
+        from .tool_executor import smart_truncate
+
         for msg in reversed(messages):
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and not content.startswith("[系统]"):
-                    return content[:2000]
+                    result, _ = smart_truncate(content, 3000, save_full=False, label="user_request")
+                    return result
                 elif isinstance(content, list):
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
                             text = part.get("text", "")
                             if not text.startswith("[系统]"):
-                                return text[:2000]
+                                result, _ = smart_truncate(text, 3000, save_full=False, label="user_request")
+                                return result
         return ""

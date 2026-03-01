@@ -763,12 +763,16 @@ class IMChannelHandler:
             _logger.info(f"[getChatHistory] SQLite fallback: no turns found for {safe_id}")
             return None
         _logger.info(f"[getChatHistory] SQLite fallback: recovered {len(db_turns)} turns for {safe_id}")
+        MSG_LIMIT = 2000
         output = f"最近 {len(db_turns)} 条消息（从持久化存储恢复）:\n\n"
         for t in db_turns:
             role = t.get("role", "?")
             content = t.get("content", "") or ""
             if isinstance(content, str):
-                output += f"[{role}] {content[:1000]}{'...' if len(content) > 1000 else ''}\n"
+                if len(content) > MSG_LIMIT:
+                    output += f"[{role}] {content[:MSG_LIMIT]}... [已截断, 原文{len(content)}字]\n"
+                else:
+                    output += f"[{role}] {content}\n"
             else:
                 output += f"[{role}] [复杂内容]\n"
         return output
@@ -794,12 +798,16 @@ class IMChannelHandler:
         if not messages:
             return "没有聊天历史"
 
+        MSG_LIMIT = 2000
         output = f"最近 {len(messages)} 条消息:\n\n"
         for msg in messages:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             if isinstance(content, str):
-                output += f"[{role}] {content[:1000]}{'...' if len(content) > 1000 else ''}\n"
+                if len(content) > MSG_LIMIT:
+                    output += f"[{role}] {content[:MSG_LIMIT]}... [已截断, 原文{len(content)}字]\n"
+                else:
+                    output += f"[{role}] {content}\n"
             else:
                 output += f"[{role}] [复杂内容]\n"
         return output
@@ -819,12 +827,16 @@ class IMChannelHandler:
         if not messages:
             return "没有聊天历史"
 
+        MSG_LIMIT = 2000
         output = f"最近 {len(messages)} 条消息:\n\n"
         for msg in messages:
             role = msg.get("role", "unknown")
             content = msg.get("content", "")
             if isinstance(content, str):
-                output += f"[{role}] {content[:1000]}{'...' if len(content) > 1000 else ''}\n"
+                if len(content) > MSG_LIMIT:
+                    output += f"[{role}] {content[:MSG_LIMIT]}... [已截断, 原文{len(content)}字]\n"
+                else:
+                    output += f"[{role}] {content}\n"
             else:
                 output += f"[{role}] [复杂内容]\n"
 

@@ -7,12 +7,14 @@ MCP (Model Context Protocol) 客户端
 支持的传输协议:
 - stdio: 标准输入输出（默认）
 - streamable_http: Streamable HTTP (用于 mcp-chrome 等)
+- sse: Server-Sent Events (兼容旧版 MCP 服务器)
 """
 
 import asyncio
 import contextlib
 import json
 import logging
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,15 @@ try:
     from mcp.client.streamable_http import streamablehttp_client
 
     MCP_HTTP_AVAILABLE = True
+except ImportError:
+    pass
+
+# 尝试导入 SSE 客户端（兼容旧版 MCP 服务器）
+MCP_SSE_AVAILABLE = False
+try:
+    from mcp.client.sse import sse_client
+
+    MCP_SSE_AVAILABLE = True
 except ImportError:
     pass
 
@@ -67,6 +78,9 @@ class MCPPrompt:
     arguments: list[dict] = field(default_factory=list)
 
 
+VALID_TRANSPORTS = {"stdio", "streamable_http", "sse"}
+
+
 @dataclass
 class MCPServerConfig:
     """MCP 服务器配置"""
@@ -76,8 +90,8 @@ class MCPServerConfig:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     description: str = ""
-    transport: str = "stdio"  # "stdio" | "streamable_http"
-    url: str = ""  # streamable_http 模式使用
+    transport: str = "stdio"  # "stdio" | "streamable_http" | "sse"
+    url: str = ""  # streamable_http / sse 模式使用
 
 
 @dataclass
@@ -87,6 +101,15 @@ class MCPCallResult:
     success: bool
     data: Any = None
     error: str | None = None
+
+
+@dataclass
+class MCPConnectResult:
+    """MCP 连接结果（包含详细错误信息）"""
+
+    success: bool
+    error: str | None = None
+    tool_count: int = 0
 
 
 class MCPClient:
@@ -134,9 +157,12 @@ class MCPClient:
 
             for name, server_data in servers.items():
                 transport = server_data.get("transport", "stdio")
-                # 兼容 "type": "streamableHttp" 格式
-                if server_data.get("type") == "streamableHttp":
+                # 兼容多种格式
+                stype = server_data.get("type", "")
+                if stype == "streamableHttp":
                     transport = "streamable_http"
+                elif stype == "sse":
+                    transport = "sse"
                 config = MCPServerConfig(
                     name=name,
                     command=server_data.get("command", ""),
@@ -155,41 +181,56 @@ class MCPClient:
             logger.error(f"Failed to load MCP config: {e}")
             return 0
 
-    async def connect(self, server_name: str) -> bool:
+    async def connect(self, server_name: str) -> MCPConnectResult:
         """
         连接到 MCP 服务器
 
-        支持 stdio 和 streamable_http 两种传输协议。
+        支持 stdio、streamable_http、sse 三种传输协议。
 
         Args:
             server_name: 服务器名称
 
         Returns:
-            是否成功
+            MCPConnectResult 包含成功状态、错误详情、发现的工具数
         """
         if not MCP_SDK_AVAILABLE:
-            logger.error("MCP SDK not available")
-            return False
+            msg = "MCP SDK 未安装，请运行: pip install mcp"
+            logger.error(msg)
+            return MCPConnectResult(success=False, error=msg)
 
         if server_name not in self._servers:
-            logger.error(f"Server not found: {server_name}")
-            return False
+            msg = f"服务器未配置: {server_name}"
+            logger.error(msg)
+            return MCPConnectResult(success=False, error=msg)
 
         if server_name in self._connections:
-            logger.debug(f"Already connected to {server_name}")
-            return True
+            tool_count = len(self.list_tools(server_name))
+            return MCPConnectResult(success=True, tool_count=tool_count)
 
         config = self._servers[server_name]
+
+        # stdio 模式预检查命令是否存在
+        if config.transport == "stdio" and config.command:
+            if not shutil.which(config.command):
+                msg = (
+                    f"启动命令 '{config.command}' 未找到。"
+                    f"请确认已安装并在 PATH 中可访问。"
+                )
+                logger.error(f"MCP connect pre-check failed for {server_name}: {msg}")
+                return MCPConnectResult(success=False, error=msg)
 
         try:
             if config.transport == "streamable_http":
                 return await self._connect_streamable_http(server_name, config)
+            elif config.transport == "sse":
+                return await self._connect_sse(server_name, config)
             else:
                 return await self._connect_stdio(server_name, config)
 
         except BaseException as e:
-            logger.error(f"Failed to connect to {server_name}: {e}")
-            return False
+            msg = f"{type(e).__name__}: {e}"
+            logger.error(f"Failed to connect to {server_name}: {msg}")
+            return MCPConnectResult(success=False, error=msg)
 
     _CONNECT_TIMEOUT: int = 30
     _CALL_TIMEOUT: int = 60
@@ -203,7 +244,7 @@ class MCPClient:
         except Exception:
             pass
 
-    async def _connect_stdio(self, server_name: str, config: MCPServerConfig) -> bool:
+    async def _connect_stdio(self, server_name: str, config: MCPServerConfig) -> MCPConnectResult:
         """通过 stdio 连接到 MCP 服务器"""
         server_params = StdioServerParameters(
             command=config.command,
@@ -236,34 +277,36 @@ class MCPClient:
                 "_client_cm": client_cm,
                 "_stdio_cm": stdio_cm,
             }
-            logger.info(f"Connected to MCP server via stdio: {server_name}")
-            return True
+            tool_count = len(self.list_tools(server_name))
+            logger.info(f"Connected to MCP server via stdio: {server_name} ({tool_count} tools)")
+            return MCPConnectResult(success=True, tool_count=tool_count)
+        except asyncio.TimeoutError:
+            msg = f"连接超时（{self._CONNECT_TIMEOUT}s）。命令: {config.command} {' '.join(config.args)}"
+            logger.error(f"Timeout connecting to {server_name} via stdio")
+            await self._cleanup_cms(client_cm, stdio_cm)
+            return MCPConnectResult(success=False, error=msg)
+        except FileNotFoundError:
+            msg = f"启动命令未找到: '{config.command}'。请确认已安装。"
+            logger.error(f"Command not found for {server_name}: {config.command}")
+            await self._cleanup_cms(client_cm, stdio_cm)
+            return MCPConnectResult(success=False, error=msg)
         except BaseException as e:
+            msg = f"stdio 连接失败: {type(e).__name__}: {e}"
             logger.error(f"Failed to connect to {server_name} via stdio: {e}")
-            try:
-                if client_cm:
-                    await client_cm.__aexit__(None, None, None)
-            except Exception:
-                pass
-            try:
-                if stdio_cm:
-                    await stdio_cm.__aexit__(None, None, None)
-            except Exception:
-                pass
-            return False
+            await self._cleanup_cms(client_cm, stdio_cm)
+            return MCPConnectResult(success=False, error=msg)
 
-    async def _connect_streamable_http(self, server_name: str, config: MCPServerConfig) -> bool:
+    async def _connect_streamable_http(self, server_name: str, config: MCPServerConfig) -> MCPConnectResult:
         """通过 Streamable HTTP 连接到 MCP 服务器"""
         if not MCP_HTTP_AVAILABLE:
-            logger.error(
-                f"Streamable HTTP transport not available for {server_name}. "
-                "Upgrade MCP SDK: pip install 'mcp>=1.2.0'"
-            )
-            return False
+            msg = "Streamable HTTP 传输不可用，请升级 MCP SDK: pip install 'mcp>=1.2.0'"
+            logger.error(msg)
+            return MCPConnectResult(success=False, error=msg)
 
         if not config.url:
-            logger.error(f"No URL configured for streamable HTTP server: {server_name}")
-            return False
+            msg = f"未配置 URL（streamable_http 模式必填）: {server_name}"
+            logger.error(msg)
+            return MCPConnectResult(success=False, error=msg)
 
         http_cm = None
         client_cm = None
@@ -290,22 +333,81 @@ class MCPClient:
                 "_client_cm": client_cm,
                 "_http_cm": http_cm,
             }
-            logger.info(f"Connected to MCP server via streamable HTTP: {server_name} ({config.url})")
-            return True
+            tool_count = len(self.list_tools(server_name))
+            logger.info(f"Connected to MCP server via streamable HTTP: {server_name} ({config.url}, {tool_count} tools)")
+            return MCPConnectResult(success=True, tool_count=tool_count)
+        except asyncio.TimeoutError:
+            msg = f"HTTP 连接超时（{self._CONNECT_TIMEOUT}s）。URL: {config.url}"
+            logger.error(f"Timeout connecting to {server_name} via streamable HTTP")
+            await self._cleanup_cms(client_cm, http_cm)
+            return MCPConnectResult(success=False, error=msg)
         except BaseException as e:
+            msg = f"HTTP 连接失败: {type(e).__name__}: {e}"
             logger.error(f"Failed to connect to {server_name} via streamable HTTP: {e}")
-            # Clean up partially opened context managers
+            await self._cleanup_cms(client_cm, http_cm)
+            return MCPConnectResult(success=False, error=msg)
+
+    async def _connect_sse(self, server_name: str, config: MCPServerConfig) -> MCPConnectResult:
+        """通过 SSE (Server-Sent Events) 连接到 MCP 服务器"""
+        if not MCP_SSE_AVAILABLE:
+            msg = "SSE 传输不可用，请升级 MCP SDK: pip install 'mcp>=1.2.0'"
+            logger.error(msg)
+            return MCPConnectResult(success=False, error=msg)
+
+        if not config.url:
+            msg = f"未配置 URL（sse 模式必填）: {server_name}"
+            logger.error(msg)
+            return MCPConnectResult(success=False, error=msg)
+
+        sse_cm = None
+        client_cm = None
+        try:
+            sse_cm = sse_client(url=config.url)
+            read, write = await asyncio.wait_for(
+                sse_cm.__aenter__(), timeout=self._CONNECT_TIMEOUT,
+            )
+
+            client_cm = ClientSession(read, write)
+            client = await asyncio.wait_for(
+                client_cm.__aenter__(), timeout=self._CONNECT_TIMEOUT,
+            )
+            await asyncio.wait_for(client.initialize(), timeout=self._CONNECT_TIMEOUT)
+
+            await asyncio.wait_for(
+                self._discover_capabilities(server_name, client),
+                timeout=self._CONNECT_TIMEOUT,
+            )
+
+            self._connections[server_name] = {
+                "client": client,
+                "transport": "sse",
+                "_client_cm": client_cm,
+                "_sse_cm": sse_cm,
+            }
+            tool_count = len(self.list_tools(server_name))
+            logger.info(f"Connected to MCP server via SSE: {server_name} ({config.url}, {tool_count} tools)")
+            return MCPConnectResult(success=True, tool_count=tool_count)
+        except asyncio.TimeoutError:
+            msg = f"SSE 连接超时（{self._CONNECT_TIMEOUT}s）。URL: {config.url}"
+            logger.error(f"Timeout connecting to {server_name} via SSE")
+            await self._cleanup_cms(client_cm, sse_cm)
+            return MCPConnectResult(success=False, error=msg)
+        except BaseException as e:
+            msg = f"SSE 连接失败: {type(e).__name__}: {e}"
+            logger.error(f"Failed to connect to {server_name} via SSE: {e}")
+            await self._cleanup_cms(client_cm, sse_cm)
+            return MCPConnectResult(success=False, error=msg)
+
+    @staticmethod
+    async def _cleanup_cms(*cms: Any) -> None:
+        """安全清理 context managers"""
+        for cm in cms:
+            if cm is None:
+                continue
             try:
-                if client_cm:
-                    await client_cm.__aexit__(None, None, None)
+                await cm.__aexit__(None, None, None)
             except Exception:
                 pass
-            try:
-                if http_cm:
-                    await http_cm.__aexit__(None, None, None)
-            except Exception:
-                pass
-            return False
 
     async def _discover_capabilities(self, server_name: str, client: Any) -> None:
         """发现 MCP 服务器的能力（工具、资源、提示词）"""
@@ -344,7 +446,7 @@ class MCPClient:
         if server_name in self._connections:
             conn = self._connections.pop(server_name)
             # 逐个关闭，每个独立 try/except 防止一个失败阻塞后续清理
-            for cm_key in ("_client_cm", "_stdio_cm", "_http_cm"):
+            for cm_key in ("_client_cm", "_stdio_cm", "_http_cm", "_sse_cm"):
                 cm = conn.get(cm_key)
                 if cm is None:
                     continue
@@ -580,7 +682,7 @@ mcp_client = MCPClient()
 
 
 # 便捷函数
-async def connect_mcp_server(name: str) -> bool:
+async def connect_mcp_server(name: str) -> MCPConnectResult:
     """连接 MCP 服务器"""
     return await mcp_client.connect(name)
 

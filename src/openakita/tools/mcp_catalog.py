@@ -38,8 +38,8 @@ class MCPServerInfo:
     command: str | None = None
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    transport: str = "stdio"  # "stdio" | "streamable_http"
-    url: str = ""  # streamable_http 模式使用
+    transport: str = "stdio"  # "stdio" | "streamable_http" | "sse"
+    url: str = ""  # streamable_http / sse 模式使用
     auto_connect: bool = False
 
 
@@ -55,12 +55,16 @@ class MCPCatalog:
 ## MCP Servers (Model Context Protocol)
 
 Use `call_mcp_tool(server, tool_name, arguments)` to call an MCP tool when needed.
+Use `connect_mcp_server(server)` to connect a server and discover its tools.
 
 {server_list}
 """
 
     SERVER_TEMPLATE = """### {server_name} (`{server_id}`)
 {tools_list}"""
+
+    SERVER_NO_TOOLS_TEMPLATE = """### {server_name} (`{server_id}`)
+- *(Not connected — use `connect_mcp_server("{server_id}")` to discover available tools)*"""
 
     TOOL_ENTRY_TEMPLATE = "- **{name}**: {description}"
 
@@ -175,10 +179,13 @@ Use `call_mcp_tool(server, tool_name, arguments)` to call an MCP tool when neede
             command = metadata.get("command")
             args = metadata.get("args") or []
             env = metadata.get("env") or {}
-            # 传输协议：支持 "transport": "streamable_http" 或 "type": "streamableHttp"
+            # 传输协议：支持 "transport" 字段和 "type" 兼容格式
             transport = metadata.get("transport", "stdio")
-            if metadata.get("type") == "streamableHttp":
+            stype = metadata.get("type", "")
+            if stype == "streamableHttp":
                 transport = "streamable_http"
+            elif stype == "sse":
+                transport = "sse"
             url = metadata.get("url", "")
             auto_connect = metadata.get("autoConnect", False)
 
@@ -234,6 +241,8 @@ Use `call_mcp_tool(server, tool_name, arguments)` to call an MCP tool when neede
         """
         生成 MCP 工具清单
 
+        包含所有服务器——有工具的展示工具列表，无工具的提示用户连接以发现。
+
         Returns:
             格式化的 MCP 清单字符串
         """
@@ -243,25 +252,27 @@ Use `call_mcp_tool(server, tool_name, arguments)` to call an MCP tool when neede
         server_sections = []
 
         for server in self._servers:
-            if not server.tools:
-                continue
+            if server.tools:
+                tool_entries = []
+                for tool in server.tools:
+                    entry = self.TOOL_ENTRY_TEMPLATE.format(
+                        name=tool.name,
+                        description=tool.description,
+                    )
+                    tool_entries.append(entry)
 
-            # 生成工具列表
-            tool_entries = []
-            for tool in server.tools:
-                entry = self.TOOL_ENTRY_TEMPLATE.format(
-                    name=tool.name,
-                    description=tool.description,
+                tools_list = "\n".join(tool_entries)
+
+                server_section = self.SERVER_TEMPLATE.format(
+                    server_name=server.name,
+                    server_id=server.identifier,
+                    tools_list=tools_list,
                 )
-                tool_entries.append(entry)
-
-            tools_list = "\n".join(tool_entries)
-
-            server_section = self.SERVER_TEMPLATE.format(
-                server_name=server.name,
-                server_id=server.identifier,
-                tools_list=tools_list,
-            )
+            else:
+                server_section = self.SERVER_NO_TOOLS_TEMPLATE.format(
+                    server_name=server.name,
+                    server_id=server.identifier,
+                )
             server_sections.append(server_section)
 
         server_list = "\n\n".join(server_sections)
@@ -328,13 +339,14 @@ Use `call_mcp_tool(server, tool_name, arguments)` to call an MCP tool when neede
             all_tools.extend(server.tools)
         return all_tools
 
-    def sync_tools_from_client(self, server_id: str, tools: list[dict]) -> int:
+    def sync_tools_from_client(self, server_id: str, tools: list[dict], force: bool = False) -> int:
         """
         将运行时发现的工具同步到 catalog（连接后调用）。
 
         Args:
             server_id: 服务器标识符
             tools: 工具列表，每项需有 name / description / input_schema
+            force: 强制覆盖已有工具列表（默认 False，仅在无工具时同步）
 
         Returns:
             同步的工具数量
@@ -349,7 +361,7 @@ Use `call_mcp_tool(server, tool_name, arguments)` to call an MCP tool when neede
             target = MCPServerInfo(identifier=server_id, name=server_id)
             self._servers.append(target)
 
-        if target.tools:
+        if target.tools and not force:
             return 0
 
         tool_infos = []
@@ -383,6 +395,10 @@ Use `call_mcp_tool(server, tool_name, arguments)` to call an MCP tool when neede
     def tool_count(self) -> int:
         """工具总数"""
         return sum(len(s.tools) for s in self._servers)
+
+
+# 全局共享 catalog（与 mcp_client 一样，所有 Agent 共享同一实例）
+mcp_catalog = MCPCatalog()
 
 
 def scan_mcp_servers(mcp_dir: Path) -> MCPCatalog:

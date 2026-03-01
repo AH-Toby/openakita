@@ -5,8 +5,8 @@ OpenAkita 工具模块
 import sys
 
 from .file import FileTool
-from .mcp import MCPClient, mcp_client
-from .mcp_catalog import MCPCatalog, scan_mcp_servers
+from .mcp import MCPClient, MCPConnectResult, mcp_client
+from .mcp_catalog import MCPCatalog, mcp_catalog, scan_mcp_servers
 from .shell import ShellTool
 from .web import WebTool
 
@@ -15,8 +15,10 @@ __all__ = [
     "FileTool",
     "WebTool",
     "MCPClient",
+    "MCPConnectResult",
     "mcp_client",
     "MCPCatalog",
+    "mcp_catalog",
     "scan_mcp_servers",
 ]
 

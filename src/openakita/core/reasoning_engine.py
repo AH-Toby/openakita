@@ -820,9 +820,9 @@ class ReasoningEngine:
                 "timestamp": datetime.now().isoformat(),
                 "decision_type": decision.type.value if hasattr(decision.type, "value") else str(decision.type),
                 "model": current_model,
-                "thinking": (decision.thinking_content or "")[:500] if decision.thinking_content else None,
+                "thinking": decision.thinking_content,
                 "thinking_duration_ms": _thinking_duration_ms,
-                "text": (decision.text_content or "")[:2000] if decision.text_content else None,
+                "text": decision.text_content,
                 "tool_calls": [
                     {
                         "name": tc.get("name"),
@@ -861,8 +861,7 @@ class ReasoningEngine:
 
             if decision.type == DecisionType.FINAL_ANSWER:
                 # 纯文本响应 - 处理完成度验证
-                answer_preview = (decision.text_content or "")[:80].replace("\n", " ")
-                logger.info(f"[ReAct] Iter {iteration+1} — FINAL_ANSWER: \"{answer_preview}...\"")
+                logger.info(f"[ReAct] Iter {iteration+1} — FINAL_ANSWER: \"{(decision.text_content or '').replace(chr(10), ' ')}\"")
                 consecutive_tool_rounds = 0
 
                 result = await self._handle_final_answer(
@@ -1739,9 +1738,9 @@ class ReasoningEngine:
                     "timestamp": datetime.now().isoformat(),
                     "decision_type": decision.type.value if hasattr(decision.type, "value") else str(decision.type),
                     "model": current_model,
-                    "thinking": (decision.thinking_content or "")[:500] if decision.thinking_content else None,
+                    "thinking": decision.thinking_content,
                     "thinking_duration_ms": _thinking_duration,
-                    "text": (decision.text_content or "")[:2000] if decision.text_content else None,
+                    "text": decision.text_content,
                     "tool_calls": [
                         {
                             "name": tc.get("name"),
@@ -2617,7 +2616,7 @@ class ReasoningEngine:
                 if block.type == "text" and block.text.strip():
                     farewell_text = block.text.strip()
                     break
-            logger.info(f"[ReAct][CancelFarewell] LLM farewell 成功: {farewell_text[:120]}")
+            logger.info(f"[ReAct][CancelFarewell] LLM farewell 成功: {farewell_text}")
         except TimeoutError:
             logger.warning("[ReAct][CancelFarewell] LLM farewell 超时 (5s)，使用默认文本")
         except Exception as e:
@@ -2698,12 +2697,12 @@ class ReasoningEngine:
             for block in farewell_response.content:
                 logger.debug(
                     f"[ReAct-Stream][CancelFarewell] block type={block.type}, "
-                    f"text={getattr(block, 'text', '')[:80]!r}"
+                    f"text={getattr(block, 'text', '')!r}"
                 )
                 if block.type == "text" and block.text.strip():
                     farewell_text = block.text.strip()
                     break
-            logger.info(f"[ReAct-Stream][CancelFarewell] LLM farewell 成功: {farewell_text[:120]}")
+            logger.info(f"[ReAct-Stream][CancelFarewell] LLM farewell 成功: {farewell_text}")
         except TimeoutError:
             logger.warning("[ReAct-Stream][CancelFarewell] LLM farewell 超时 (5s)，使用默认文本")
         except Exception as e:
@@ -2716,7 +2715,7 @@ class ReasoningEngine:
         finally:
             reset_tracking_context(_tt)
 
-        logger.info(f"[ReAct-Stream][CancelFarewell] 最终输出文本: {farewell_text[:120]}")
+        logger.info(f"[ReAct-Stream][CancelFarewell] 最终输出文本: {farewell_text}")
         chunk_size = 20
         for i in range(0, len(farewell_text), chunk_size):
             yield {"type": "text_delta", "content": farewell_text[i:i + chunk_size]}

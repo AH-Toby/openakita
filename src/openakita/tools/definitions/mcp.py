@@ -86,20 +86,22 @@ MCP_TOOLS = [
 **传输协议**：
 - stdio: 通过标准输入输出通信（需要 command），用于本地进程
 - streamable_http: 通过 HTTP 通信（需要 url），用于远程服务
+- sse: 通过 Server-Sent Events 通信（需要 url），兼容旧版 MCP 服务器
 
 **示例**：
 stdio 模式: add_mcp_server(name="web-search", transport="stdio", command="python", args=["-m", "my_mcp_server"])
 HTTP 模式: add_mcp_server(name="remote-api", transport="streamable_http", url="http://localhost:8080/mcp")
+SSE 模式: add_mcp_server(name="legacy-api", transport="sse", url="http://localhost:8080/sse")
 
-**注意**：添加后需要调用 connect_mcp_server 来建立连接。""",
+**注意**：添加后会自动尝试连接并发现工具。如果连接失败，配置仍会保存，可稍后手动连接。""",
         "input_schema": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "服务器唯一标识符（如 web-search, my-database）"},
                 "transport": {
                     "type": "string",
-                    "enum": ["stdio", "streamable_http"],
-                    "description": "传输协议: stdio(本地进程) | streamable_http(HTTP远程)",
+                    "enum": ["stdio", "streamable_http", "sse"],
+                    "description": "传输协议: stdio(本地进程) | streamable_http(HTTP远程) | sse(SSE远程,兼容旧版MCP)",
                     "default": "stdio",
                 },
                 "command": {"type": "string", "description": "启动命令 (stdio 模式必填，如 python, npx, node)"},

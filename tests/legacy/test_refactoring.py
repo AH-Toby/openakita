@@ -451,7 +451,7 @@ def _():
     assert hasattr(settings, "tracing_console_export")
     assert hasattr(settings, "evaluation_enabled")
     assert hasattr(settings, "evaluation_output_dir")
-    assert settings.tracing_enabled is False
+    assert settings.tracing_enabled is True  # Agent Harness: 轻量追踪默认开启
     assert settings.evaluation_enabled is False
 
 
@@ -460,8 +460,8 @@ def _():
     from openakita.tracing.tracer import get_tracer
     tracer = get_tracer()
     # main.py 的 _init_tracing 在 import 时已执行
-    # tracing_enabled 默认 False，所以 tracer 应该是 disabled
-    assert not tracer.enabled
+    # tracing_enabled 默认 True（Agent Harness 轻量追踪模式）
+    assert tracer.enabled
 
 
 @test("Agent 子模块初始化检查")

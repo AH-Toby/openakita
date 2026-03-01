@@ -684,8 +684,7 @@ class Agent:
                     result_str = str(result) if result is not None else "操作已完成"
                     result_content = result_str
 
-                _preview = result_str if len(result_str) <= 800 else result_str[:800] + "\n... (已截断)"
-                logger.info(f"[Tool] {tool_name} → {_preview}")
+                logger.info(f"[Tool] {tool_name} → {result_str}")
 
                 if capture_delivery_receipts and tool_name == "deliver_artifacts" and result_str:
                     try:
@@ -2328,7 +2327,10 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
 4. 如果委派失败或超时，告知用户并尝试自己处理
 5. **有依赖的任务串行委派**（B 需要 A 的结果 → 先 A 再 B）
 6. **独立任务必须用 `delegate_parallel` 并行**，不要逐个串行浪费时间
-7. 对话历史中可能包含你之前委派给子Agent的**工作总结**（以 [执行摘要] 形式出现）。你必须仔细阅读这些总结，把它们当作已发生的事实。不要否认已完成的任务，不要说"我没有做过"，不要重复执行已经成功完成的工作。当用户提到相关产出（文件、报告、分析结果）时，直接引用历史总结中的信息。
+7. 对话历史中可能包含以下标记，它们记录了你之前**实际执行**过的操作：
+   - **[子Agent工作总结]**：子Agent的任务、完成状态、交付的文件路径和结果摘要
+   - **[执行摘要]**：你自己调用的工具及其结果
+   你必须仔细阅读这些内容，把它们当作已发生的事实。不要否认已完成的操作，不要说"我没有做过"，不要重复执行已经成功完成的工作。当用户提到相关产出（文件、报告、分析结果）时，直接引用历史记录中的信息。
 
 ### 协作行为准则
 
@@ -3513,14 +3515,10 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
         if history_messages and history_messages[-1].get("role") == "user":
             history_messages = history_messages[:-1]
 
-        _TOOL_SUMMARY_MARKER = "\n\n[执行摘要]"
-
         messages: list[dict] = []
         for msg in history_messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            if role == "assistant" and _TOOL_SUMMARY_MARKER in content:
-                content = content[:content.index(_TOOL_SUMMARY_MARKER)]
             if role in ("user", "assistant") and content:
                 if messages and messages[-1]["role"] == role:
                     messages[-1]["content"] += "\n" + content
@@ -4180,29 +4178,37 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
         """
         从最新的 react_trace 生成工具执行摘要文本。
 
-        返回形如:
-          [执行摘要]
-          - tool_name({key: val}) → result_hint...
+        返回格式:
 
-          [子Agent工作总结]
+          [子Agent工作总结]      (仅多Agent委派时存在)
           1. [网探] 任务: ... | 状态: ✅完成 | 交付文件: ...
           2. [文助] 任务: ... | 状态: ✅完成 | 交付文件: ...
 
-        供 session 保存 assistant 消息时追加，确保下一轮 LLM 能看到上一轮做了什么。
+          [执行摘要]
+          - tool_name({key: val}) → result_hint...
 
-        对委派类工具，在执行摘要末尾附加独立的 [子Agent工作总结] 区块，
-        包含 sub_agent_records 中的结构化 work_summary，保证子 Agent 的
-        任务、状态、交付物、关键结果完整保留到对话历史中。
+        该摘要追加到 assistant 消息末尾并保存到 session，
+        使下一轮 LLM 能感知上一轮的工具操作。
+        当上下文 token 逼近上限时由 ContextManager 自然压缩。
 
         空字符串表示无工具调用。
         """
+        from .tool_executor import save_overflow
+
         trace = getattr(self, "_last_finalized_trace", None) or \
             getattr(self.reasoning_engine, "_last_react_trace", None) or []
         if not trace:
             return ""
 
+        # 动态预算：根据工具数量自适应每个工具的结果摘要长度
+        TOTAL_RESULT_BUDGET = 4000
+        num_tools = sum(len(it.get("tool_calls", [])) for it in trace)
+        per_tool_budget = max(150, min(600, TOTAL_RESULT_BUDGET // max(num_tools, 1)))
+
         lines: list[str] = []
         has_delegation = False
+        truncated_full_results: list[str] = []
+
         for it in trace:
             for tc in it.get("tool_calls", []):
                 name = tc.get("name", "")
@@ -4223,10 +4229,14 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                 for tr in it.get("tool_results", []):
                     if tr.get("tool_use_id") == tc.get("id", ""):
                         raw = str(tr.get("result_content", tr.get("result_preview", "")))
-                        max_len = 800 if name in self._DELEGATION_TOOLS else 120
-                        result_hint = raw[:max_len].replace("\n", " ")
+                        max_len = 800 if name in self._DELEGATION_TOOLS else per_tool_budget
                         if len(raw) > max_len:
-                            result_hint += "..."
+                            result_hint = raw[:max_len].replace("\n", " ") + "..."
+                            truncated_full_results.append(
+                                f"=== {name} (id={tc.get('id', '')}) ===\n{raw}"
+                            )
+                        else:
+                            result_hint = raw.replace("\n", " ")
                         break
 
                 line = f"- {name}"
@@ -4238,17 +4248,31 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
         if not lines:
             return ""
 
-        result = "\n\n[执行摘要]\n" + "\n".join(lines)
+        if truncated_full_results:
+            overflow_content = "\n\n".join(truncated_full_results)
+            overflow_path = save_overflow("trace_summary", overflow_content)
+            lines.append(
+                f"[部分工具结果已截断, 完整内容: {overflow_path}, 可用 read_file 查看]"
+            )
+
+        parts: list[str] = []
 
         if has_delegation:
             ws_section = self._build_work_summary_section()
             if ws_section:
-                result += ws_section
+                parts.append(ws_section)
 
-        return result
+        parts.append("\n\n[执行摘要]\n" + "\n".join(lines))
+
+        return "".join(parts)
 
     def _build_work_summary_section(self) -> str:
-        """Build [子Agent工作总结] section from sub_agent_records."""
+        """Build [子Agent工作总结] section from sub_agent_records.
+
+        Placed BEFORE [执行摘要] so that high-level task summaries appear
+        before low-level tool call details, improving readability and
+        ContextManager summarization quality.
+        """
         session = self._current_session
         if not session:
             return ""
@@ -4547,18 +4571,21 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
 
     def _get_last_user_request(self, messages: list[dict]) -> str:
         """获取最后一条用户请求（当前任务的原始请求）"""
+        from .tool_executor import smart_truncate
+
         for msg in reversed(messages):
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and not content.startswith("[系统]"):
-                    return content[:2000]
+                    result, _ = smart_truncate(content, 3000, save_full=False, label="user_request")
+                    return result
                 elif isinstance(content, list):
-                    # 多模态消息，提取文本部分
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
                             text = part.get("text", "")
                             if not text.startswith("[系统]"):
-                                return text[:2000]
+                                result, _ = smart_truncate(text, 3000, save_full=False, label="user_request")
+                                return result
         return ""
 
     async def _verify_task_completion(
@@ -4635,13 +4662,17 @@ create_agent(name="名称", description="描述", skills=["技能"], custom_prom
                     # 继续执行 LLM 验证，不强制返回 False
 
         # 依赖 LLM 进行判断
+        from .tool_executor import smart_truncate
+        user_display, _ = smart_truncate(user_request, 3000, save_full=False, label="verify_user")
+        response_display, _ = smart_truncate(assistant_response, 8000, save_full=False, label="verify_response")
+
         verify_prompt = f"""请判断以下交互是否已经**完成**用户的意图。
 
 ## 用户消息
-{user_request[:2000]}
+{user_display}
 
 ## 助手响应
-{assistant_response[:4000]}
+{response_display}
 
 ## 已执行的工具
 {", ".join(executed_tools) if executed_tools else "无"}
@@ -4794,12 +4825,12 @@ NEXT: 建议的下一步（如有）"""
             for block in response.content:
                 logger.debug(
                     f"[StopTask][CancelFarewell] block type={block.type}, "
-                    f"text={getattr(block, 'text', '')[:80]!r}"
+                    f"text={getattr(block, 'text', '')!r}"
                 )
                 if block.type == "text" and block.text.strip():
                     farewell_text = block.text.strip()
                     break
-            logger.info(f"[StopTask][CancelFarewell] LLM farewell 成功: {farewell_text[:120]}")
+            logger.info(f"[StopTask][CancelFarewell] LLM farewell 成功: {farewell_text}")
         except TimeoutError:
             logger.warning("[StopTask][CancelFarewell] LLM farewell 超时 (5s)，使用默认文本")
         except Exception as e:

@@ -87,6 +87,43 @@ class ShellTool:
         self.timeout = timeout
         self.shell = shell
         self._is_windows = platform.system() == "Windows"
+        self._oem_encoding: str | None = None
+
+    # ------------------------------------------------------------------
+    # Windows 编码处理
+    # ------------------------------------------------------------------
+
+    def _get_oem_encoding(self) -> str:
+        """获取 Windows OEM 代码页编码名（如 cp936），用于解码回退"""
+        if self._oem_encoding is not None:
+            return self._oem_encoding
+        try:
+            import ctypes
+            oem_cp = ctypes.windll.kernel32.GetOEMCP()
+            self._oem_encoding = f"cp{oem_cp}"
+        except Exception:
+            self._oem_encoding = "gbk"
+        return self._oem_encoding
+
+    def _decode_output(self, data: bytes) -> str:
+        """智能解码子进程输出：优先 UTF-8，回退到系统 OEM 代码页。
+
+        cmd.exe 默认以 OEM 代码页 (中文 Windows = GBK/CP936) 输出，
+        即使用 chcp 65001 也可能有极少数程序不遵守。
+        此方法先尝试 UTF-8 严格解码，失败后以系统代码页兜底。
+        """
+        if not data:
+            return ""
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            if self._is_windows:
+                encoding = self._get_oem_encoding()
+                try:
+                    return data.decode(encoding, errors="replace")
+                except (UnicodeDecodeError, LookupError):
+                    pass
+            return data.decode("utf-8", errors="replace")
 
     # ------------------------------------------------------------------
     # PowerShell 检测 & 编码
@@ -120,8 +157,14 @@ class ShellTool:
 
         PowerShell -EncodedCommand 接受 UTF-16LE Base64 编码的字符串，
         完全绕过 cmd.exe 的引号和特殊字符解析。
+        输出强制使用 UTF-8 编码，避免中文乱码。
         """
-        encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+        utf8_preamble = (
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+            "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+        )
+        full_command = utf8_preamble + command
+        encoded = base64.b64encode(full_command.encode("utf-16-le")).decode("ascii")
         return f"powershell -NoProfile -NonInteractive -EncodedCommand {encoded}"
 
     @staticmethod
@@ -216,12 +259,14 @@ class ShellTool:
         except Exception:
             pass
 
-        # Windows PowerShell 命令处理
+        # Windows 命令编码处理
         original_command = command
         if self._is_windows and self._needs_powershell(command):
             command = self._wrap_for_powershell(command)
-            # EncodedCommand 很长，日志只记录原始命令
             logger.info(f"Windows PowerShell encoded: {original_command[:200]}")
+        elif self._is_windows:
+            # 强制 cmd.exe 使用 UTF-8 代码页，解决中文路径/文件名乱码
+            command = f"chcp 65001 >nul && {command}"
 
         logger.info(f"Executing: {command[:300]}")
         logger.debug(f"CWD: {work_dir}")
@@ -243,8 +288,8 @@ class ShellTool:
 
             result = CommandResult(
                 returncode=process.returncode or 0,
-                stdout=stdout.decode("utf-8", errors="replace"),
-                stderr=stderr.decode("utf-8", errors="replace"),
+                stdout=self._decode_output(stdout),
+                stderr=self._decode_output(stderr),
             )
 
             logger.info(f"Command completed with code: {result.returncode}")
@@ -305,9 +350,11 @@ class ShellTool:
         except Exception:
             pass
 
-        # Windows PowerShell 命令处理
+        # Windows 命令编码处理
         if self._is_windows and self._needs_powershell(command):
             command = self._wrap_for_powershell(command)
+        elif self._is_windows:
+            command = f"chcp 65001 >nul && {command}"
 
         logger.info(f"Executing interactively: {command[:300]}")
 
@@ -321,7 +368,7 @@ class ShellTool:
 
         if process.stdout:
             async for line in process.stdout:
-                yield line.decode("utf-8", errors="replace")
+                yield self._decode_output(line)
 
         await process.wait()
 
@@ -363,7 +410,7 @@ class ShellTool:
         """
         专门执行 PowerShell 命令（跨平台）。
 
-        使用 -EncodedCommand 传递命令，彻底避免转义问题。
+        使用 _encode_for_powershell 统一处理 UTF-8 编码 + Base64。
 
         Args:
             command: PowerShell 命令
@@ -371,16 +418,17 @@ class ShellTool:
         Returns:
             CommandResult
         """
-        encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
+        # 使用统一的编码方法（含 UTF-8 preamble）
+        encoded_cmd = self._encode_for_powershell(command)
         if self._is_windows:
-            return await self.run(
-                f"powershell -NoProfile -NonInteractive -EncodedCommand {encoded}"
-            )
+            # 直接调用 run()；命令已编码，run() 中 _needs_powershell 会匹配
+            # 到 "powershell" 前缀但 _wrap_for_powershell 会因为无法提取
+            # inner command 而原样返回，所以不会双重编码
+            return await self.run(encoded_cmd)
         else:
-            # Linux/Mac 上使用 pwsh（PowerShell Core，需单独安装）
             if not shutil.which("pwsh"):
                 return CommandResult(
-                    exit_code=1,
+                    returncode=1,
                     stdout="",
                     stderr=(
                         "PowerShell Core (pwsh) is not installed on this system.\n"
@@ -388,6 +436,5 @@ class ShellTool:
                         "Or use a regular shell command instead."
                     ),
                 )
-            return await self.run(
-                f"pwsh -NoProfile -NonInteractive -EncodedCommand {encoded}"
-            )
+            # 替换 powershell 为 pwsh
+            return await self.run(encoded_cmd.replace("powershell ", "pwsh ", 1))

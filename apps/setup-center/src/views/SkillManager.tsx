@@ -797,7 +797,7 @@ export function SkillManager({
                   signal: AbortSignal.timeout(15_000),
                 });
                 const data = await res.json();
-                if (data.error) { setError(data.error); return; }
+                if (data.error) { setError(typeof data.error === "string" ? data.error : JSON.stringify(data.error)); return; }
               } catch (e) { setError(String(e)); }
             }
             await loadSkills();
