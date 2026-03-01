@@ -521,30 +521,36 @@ export function AgentManagerView({
             {/* Skills multi-select */}
             {editingProfile.skills_mode !== "all" && availableSkills.length > 0 && (
               <div style={{
-                maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)",
-                borderRadius: 8, padding: 8, marginBottom: 12,
-                display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 8px",
+                maxHeight: 220, overflowY: "auto", border: "1px solid var(--line)",
+                borderRadius: 8, padding: 4, marginBottom: 12,
               }}>
-                {availableSkills.map((skill) => (
-                  <label
-                    key={skill.name}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 6,
-                      padding: "4px 6px", borderRadius: 4, cursor: "pointer",
-                      fontSize: 12, minWidth: 0,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={editingProfile.skills.includes(skill.name)}
-                      onChange={() => toggleSkill(skill.name)}
-                      style={{ accentColor: "var(--primary, #3b82f6)", flexShrink: 0 }}
-                    />
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {skill.name}
-                    </span>
-                  </label>
-                ))}
+                {availableSkills.map((skill) => {
+                  const checked = editingProfile.skills.includes(skill.name);
+                  return (
+                    <label
+                      key={skill.name}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 8,
+                        padding: "6px 10px", borderRadius: 6, cursor: "pointer",
+                        fontSize: 13, lineHeight: 1.4,
+                        background: checked ? "var(--primary-bg, rgba(59,130,246,0.08))" : "transparent",
+                        transition: "background 0.15s",
+                      }}
+                      onMouseEnter={(e) => { if (!checked) e.currentTarget.style.background = "var(--hover, rgba(0,0,0,0.04))"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = checked ? "var(--primary-bg, rgba(59,130,246,0.08))" : "transparent"; }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleSkill(skill.name)}
+                        style={{ accentColor: "var(--primary, #3b82f6)", flexShrink: 0, width: 16, height: 16 }}
+                      />
+                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {skill.name}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
             )}
 
