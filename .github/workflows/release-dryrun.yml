@@ -178,9 +178,19 @@ jobs:
 
           echo "Signing embedded binaries with identity: ${IDENTITY}"
           find "$RESOURCE_DIR" -type f -perm +111 | while read -r bin; do
+            # Python.framework/Python should be signed as framework bundle, not as plain file.
+            if [[ "$bin" == *"/Python.framework/Python" ]]; then
+              echo "  Skipping framework entry file (will sign bundle): $bin"
+              continue
+            fi
             echo "  Signing: $bin"
             codesign --force --options runtime --timestamp --sign "$IDENTITY" "$bin"
           done
+          PY_FRAMEWORK_DIR="$RESOURCE_DIR/openakita-server/_internal/Python.framework"
+          if [ -d "$PY_FRAMEWORK_DIR" ]; then
+            echo "  Signing framework bundle: $PY_FRAMEWORK_DIR"
+            codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$PY_FRAMEWORK_DIR"
+          fi
           echo "All embedded binaries signed."
 
       - name: Create gitignored placeholders for Rust build
