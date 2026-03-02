@@ -190,6 +190,14 @@ Dark/light theme · Onboarding wizard · Auto-update · Bilingual (EN/CN) · Sta
 
 ## Multi-Agent Collaboration
 
+<p align="center">
+  <a href="https://www.bilibili.com/video/BV1psP5zTEE7">
+    <img src="docs/assets/multi_agent_demo_cover.png" alt="▶ Watch Multi-Agent Collaboration Demo" width="720" />
+  </a>
+  <br/>
+  <sub>▶ Click to watch the Multi-Agent collaboration demo on Bilibili</sub>
+</p>
+
 OpenAkita has a built-in multi-Agent orchestration system — not just one AI, but an **AI team**:
 
 ```

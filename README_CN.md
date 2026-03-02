@@ -190,6 +190,14 @@ openakita status                   # 查看运行状态
 
 ## 多 Agent 协作
 
+<p align="center">
+  <a href="https://www.bilibili.com/video/BV1psP5zTEE7">
+    <img src="docs/assets/multi_agent_demo_cover.png" alt="▶ 观看多智能体协同工作演示" width="720" />
+  </a>
+  <br/>
+  <sub>▶ 点击观看多智能体协同工作演示（B站）</sub>
+</p>
+
 OpenAkita 内置完整的多 Agent 协作系统——不是只有一个 AI，而是一个 **AI 团队**：
 
 ```
