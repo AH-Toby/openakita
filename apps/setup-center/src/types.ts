@@ -26,6 +26,8 @@ export type ProviderInfo = {
   is_local?: boolean;          // true for local providers (Ollama, LM Studio, etc.)
   coding_plan_base_url?: string;   // Coding Plan 专用 API 地址（存在则支持 coding plan）
   coding_plan_api_type?: string;   // Coding Plan 模式下的协议类型（不存在则与 api_type 相同）
+  default_context_window?: number;
+  default_max_tokens?: number;
 };
 
 export type ListedModel = {
@@ -78,6 +80,7 @@ export type StepId =
   | "im"
   | "tools"
   | "agent"
+  | "advanced"
   | "finish"
   | "quick-form"
   | "quick-setup"

@@ -3,9 +3,7 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
-import { check as checkUpdate, type Update } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
-// Window controls are handled by native title bar
+import type { Update } from "@tauri-apps/plugin-updater";
 import { ChatView } from "./views/ChatView";
 import { SkillManager } from "./views/SkillManager";
 import { IMView } from "./views/IMView";
@@ -16,20 +14,36 @@ import { MemoryView } from "./views/MemoryView";
 import { AgentDashboardView } from "./views/AgentDashboardView";
 import { AgentManagerView } from "./views/AgentManagerView";
 import { FeedbackModal } from "./views/FeedbackModal";
-import type { EndpointSummary as EndpointSummaryType } from "./types";
+import { IMConfigView } from "./views/IMConfigView";
+import { AgentSystemView } from "./views/AgentSystemView";
+import type {
+  EndpointSummary as EndpointSummaryType,
+  PlatformInfo, WorkspaceSummary, ProviderInfo, ListedModel,
+  EndpointDraft, PythonCandidate, EmbeddedPythonInstallResult, InstallSource,
+  EnvMap, StepId, Step,
+} from "./types";
 import {
-  IconChat, IconIM, IconSkills, IconStatus, IconConfig,
   IconRefresh, IconCheck, IconCheckCircle, IconX, IconXCircle,
-  IconChevronDown, IconChevronRight, IconChevronUp, IconGlobe, IconLink, IconPower,
+  IconChevronDown, IconChevronRight, IconChevronUp, IconGlobe,
   IconEdit, IconTrash, IconEye, IconEyeOff, IconInfo, IconClipboard,
   DotGreen, DotGray, DotYellow, DotRed,
-  IconBook, IconZap, IconGear, IconMoon, IconSun, IconLaptop, IconPlug, IconCalendar,
-  IconBug, IconBrain, IconGitHub, IconGitee, IconUsers, IconBot,
   LogoTelegram, LogoFeishu, LogoWework, LogoDingtalk, LogoQQ,
 } from "./icons";
 import logoUrl from "./assets/logo.png";
 import "highlight.js/styles/github.css";
 import { getThemePref, setThemePref, type Theme } from "./theme";
+import { BUILTIN_PROVIDERS, STT_RECOMMENDED_MODELS, PIP_INDEX_PRESETS } from "./constants";
+import {
+  isLocalProvider, localProviderPlaceholderKey, friendlyFetchError,
+  inferCapabilities, fetchModelsDirectly, safeFetch, proxyFetch,
+  isMiniMaxProvider, isVolcCodingPlanProvider, isDashScopeCodingPlanProvider,
+  isLongCatProvider, miniMaxFallbackModels, volcCodingPlanFallbackModels,
+  dashScopeCodingPlanFallbackModels, longCatFallbackModels,
+} from "./providers";
+import {
+  slugify, joinPath, toFileUrl, envKeyFromSlug, nextEnvKeyName,
+  suggestEndpointName, parseEnv, envGet, envSet,
+} from "./utils";
 // ═══════════════════════════════════════════════════════════════════════
 // 前后端交互路由原则（全局适用）：
 //   后端运行中 → 所有配置读写、模型列表、连接测试 **优先走后端 HTTP API**
@@ -43,903 +57,17 @@ import { getThemePref, setThemePref, type Theme } from "./theme";
 //   1. Onboarding（打包模式）：NSIS → onboarding wizard → 写本地 → 启动服务 → HTTP API
 //   2. Wizard Full（开发者模式）：选工作区 → 装 venv → 配置端点(本地) → 启动服务 → HTTP API
 // ═══════════════════════════════════════════════════════════════════════
-// ── 唯一数据源：与 Python 后端共享 providers.json ──
-// 路径通过 vite.config.ts alias 映射到 src/openakita/llm/registries/providers.json
-// 新增/修改服务商只需编辑该 JSON 文件，前后端自动同步
-import SHARED_PROVIDERS from "@shared/providers.json";
-
-type PlatformInfo = {
-  os: string;
-  arch: string;
-  homeDir: string;
-  openakitaRootDir: string;
-};
-
-type WorkspaceSummary = {
-  id: string;
-  name: string;
-  path: string;
-  isCurrent: boolean;
-};
-
-type ProviderInfo = {
-  name: string;
-  slug: string;
-  api_type: "openai" | "anthropic" | string;
-  default_base_url: string;
-  api_key_env_suggestion: string;
-  supports_model_list: boolean;
-  supports_capability_api: boolean;
-  requires_api_key?: boolean;
-  is_local?: boolean;
-  coding_plan_base_url?: string;
-  coding_plan_api_type?: string;
-  default_context_window?: number;  // 订阅/编程类端点建议上下文（如 200000）
-  default_max_tokens?: number;      // 建议最大输出 token
-};
-
-// 内置 Provider 列表（打包模式下 venv 不可用时作为回退）
-// 数据来源：@shared/providers.json（与 Python 后端共享同一份文件）
-// registry_class 字段仅 Python 使用，前端忽略
-const BUILTIN_PROVIDERS: ProviderInfo[] = SHARED_PROVIDERS as ProviderInfo[];
-
-/** 判断服务商是否为本地服务（不需要真实 API Key） */
-function isLocalProvider(p: ProviderInfo | null | undefined): boolean {
-  return p?.requires_api_key === false || p?.is_local === true;
-}
-
-/** 获取本地服务商的默认 placeholder API key */
-function localProviderPlaceholderKey(p: ProviderInfo | null | undefined): string {
-  return p?.slug || "local";
-}
-
-/** STT 推荐模型（按 provider slug 索引） */
-const STT_RECOMMENDED_MODELS: Record<string, { id: string; note: string }[]> = {
-  "openai":          [{ id: "gpt-4o-transcribe", note: "推荐" }, { id: "whisper-1", note: "" }],
-  "dashscope":       [{ id: "qwen3-asr-flash", note: "推荐 (文件识别 ≤5min)" }],
-  "dashscope-intl":  [{ id: "qwen3-asr-flash", note: "recommended (file ≤5min)" }],
-  "groq":            [{ id: "whisper-large-v3-turbo", note: "推荐" }, { id: "whisper-large-v3", note: "" }],
-  "siliconflow":     [{ id: "FunAudioLLM/SenseVoiceSmall", note: "推荐" }, { id: "TeleAI/TeleSpeechASR", note: "" }],
-  "siliconflow-intl":[{ id: "FunAudioLLM/SenseVoiceSmall", note: "推荐" }, { id: "TeleAI/TeleSpeechASR", note: "" }],
-};
-
-/**
- * 将模型拉取的原始错误转换为用户友好的提示信息。
- * @param rawError 原始错误字符串
- * @param t i18n 翻译函数
- * @param providerName 服务商显示名称（可选，用于本地服务提示）
- */
-function friendlyFetchError(rawError: string, t: (k: string, vars?: Record<string, unknown>) => string, providerName?: string): string {
-  const e = rawError.toLowerCase();
-
-  // 网络不可达 / CORS / Failed to fetch
-  if (e.includes("failed to fetch") || e.includes("networkerror") || e.includes("network error") || e.includes("error sending request") || e.includes("fetch failed")) {
-    // 本地服务商特化提示
-    if (providerName && (e.includes("localhost") || e.includes("127.0.0.1") || e.includes("0.0.0.0"))) {
-      return t("llm.fetchErrorLocalNotRunning", { provider: providerName });
-    }
-    return t("llm.fetchErrorNetwork");
-  }
-  // 认证失败
-  if (e.includes("401") || e.includes("unauthorized") || e.includes("invalid api key") || e.includes("invalid_api_key") || e.includes("authentication")) {
-    return t("llm.fetchErrorAuth");
-  }
-  // 权限不足
-  if (e.includes("403") || e.includes("forbidden") || e.includes("permission")) {
-    return t("llm.fetchErrorForbidden");
-  }
-  // 接口不存在
-  if (e.includes("404") || e.includes("not found")) {
-    return t("llm.fetchErrorNotFound");
-  }
-  // 超时
-  if (e.includes("timeout") || e.includes("aborterror") || e.includes("timed out") || e.includes("deadline")) {
-    return t("llm.fetchErrorTimeout");
-  }
-  // 兜底：截断原始信息，移除过长的技术细节
-  const detail = rawError.length > 120 ? rawError.slice(0, 120) + "…" : rawError;
-  return t("llm.fetchErrorUnknown", { detail });
-}
-
-type ListedModel = {
-  id: string;
-  name: string;
-  capabilities: Record<string, boolean>;
-};
-
-// ── 前端直连模型列表 API（不依赖 Python 后端）──
-// 当 Python venv 和本地服务都不可用时（如打包模式 onboarding），
-// 前端可以直接用用户的 API Key 请求服务商的 /models 接口。
-// 这与 Python bridge 的 list_models 逻辑完全等价。
-
-/**
- * 前端版 infer_capabilities：根据模型名推断能力。
- * 与 Python 端 openakita.llm.capabilities.infer_capabilities 的关键词规则保持一致。
- *
- * ⚠ 维护提示：如果 Python 端的推断规则有修改，需要同步更新此函数。
- * 参见: src/openakita/llm/capabilities.py → infer_capabilities()
- */
-function inferCapabilities(modelName: string, _providerSlug?: string | null): Record<string, boolean> {
-  const m = modelName.toLowerCase();
-  const caps: Record<string, boolean> = { text: true, vision: false, video: false, tools: false, thinking: false };
-
-  // Vision
-  if (["vl", "vision", "visual", "image", "-v-", "4v"].some(kw => m.includes(kw))) caps.vision = true;
-  // Video
-  if (["kimi", "gemini"].some(kw => m.includes(kw))) caps.video = true;
-  // Thinking
-  if (["thinking", "r1", "qwq", "qvq", "o1"].some(kw => m.includes(kw))) caps.thinking = true;
-  // Tools
-  if (["qwen", "gpt", "claude", "deepseek", "kimi", "glm", "gemini", "moonshot", "minimax"].some(kw => m.includes(kw))) caps.tools = true;
-  if (m.includes("minimax") && m.includes("m2")) caps.thinking = true;
-
-  return caps;
-}
-
-function isMiniMaxProvider(providerSlug: string | null, baseUrl: string): boolean {
-  const slug = (providerSlug || "").toLowerCase();
-  const base = (baseUrl || "").toLowerCase();
-  return ["minimax", "minimax-cn", "minimax-int"].includes(slug) || base.includes("minimax") || base.includes("minimaxi");
-}
-
-function isVolcCodingPlanProvider(providerSlug: string | null, baseUrl: string): boolean {
-  const slug = (providerSlug || "").toLowerCase();
-  const base = (baseUrl || "").toLowerCase();
-  const isVolc = slug === "volcengine" || base.includes("volces.com");
-  return isVolc && base.includes("/api/coding");
-}
-
-function isLongCatProvider(providerSlug: string | null, baseUrl: string): boolean {
-  const slug = (providerSlug || "").toLowerCase();
-  const base = (baseUrl || "").toLowerCase();
-  return slug === "longcat" || base.includes("longcat.chat");
-}
-
-function isDashScopeCodingPlanProvider(providerSlug: string | null, baseUrl: string): boolean {
-  const slug = (providerSlug || "").toLowerCase();
-  const base = (baseUrl || "").toLowerCase();
-  const isDash = slug === "dashscope" || slug === "dashscope-intl" || base.includes("dashscope.aliyuncs.com");
-  return isDash && base.includes("coding");
-}
-
-function miniMaxFallbackModels(providerSlug: string | null): ListedModel[] {
-  // MiniMax 兼容文档仅列出固定候选模型，且未提供 /models 列表接口。
-  const ids = [
-    "MiniMax-M2.5",
-    "MiniMax-M2.5-highspeed",
-    "MiniMax-M2.1",
-    "MiniMax-M2.1-highspeed",
-    "MiniMax-M2",
-  ];
-  return ids.map((id) => ({
-    id,
-    name: id,
-    capabilities: inferCapabilities(id, providerSlug),
-  }));
-}
-
-function volcCodingPlanFallbackModels(providerSlug: string | null): ListedModel[] {
-  const ids = [
-    "doubao-seed-2.0-code",
-    "doubao-seed-code",
-    "glm-4.7",
-    "deepseek-v3.2",
-    "kimi-k2-thinking",
-    "kimi-k2.5",
-  ];
-  return ids.map((id) => ({
-    id,
-    name: id,
-    capabilities: inferCapabilities(id, providerSlug),
-  }));
-}
-
-function longCatFallbackModels(providerSlug: string | null): ListedModel[] {
-  const ids = [
-    "LongCat-Flash-Chat",
-    "LongCat-Flash-Thinking",
-    "LongCat-Flash-Thinking-2601",
-    "LongCat-Flash-Lite",
-  ];
-  return ids.map((id) => ({
-    id,
-    name: id,
-    capabilities: inferCapabilities(id, providerSlug),
-  }));
-}
-
-function dashScopeCodingPlanFallbackModels(providerSlug: string | null): ListedModel[] {
-  const ids = [
-    "qwen3.5-plus",
-    "kimi-k2.5",
-    "glm-5",
-    "MiniMax-M2.5",
-    "qwen3-max-2026-01-23",
-    "qwen3-coder-next",
-    "qwen3-coder-plus",
-    "glm-4.7",
-  ];
-  return ids.map((id) => ({
-    id,
-    name: id,
-    capabilities: inferCapabilities(id, providerSlug),
-  }));
-}
-
-/**
- * 前端直连服务商 API 拉取模型列表。
- * 通过 Rust http_proxy_request 命令代理发送，绕过 WebView CORS 限制。
- */
-async function fetchModelsDirectly(params: {
-  apiType: string; baseUrl: string; providerSlug: string | null; apiKey: string;
-}): Promise<ListedModel[]> {
-  const { apiType, baseUrl, providerSlug, apiKey } = params;
-  const base = baseUrl.replace(/\/+$/, "");
-
-  if (isVolcCodingPlanProvider(providerSlug, baseUrl)) {
-    return volcCodingPlanFallbackModels(providerSlug);
-  }
-  if (isDashScopeCodingPlanProvider(providerSlug, baseUrl)) {
-    return dashScopeCodingPlanFallbackModels(providerSlug);
-  }
-  if (isLongCatProvider(providerSlug, baseUrl)) {
-    return longCatFallbackModels(providerSlug);
-  }
-
-  if (apiType === "anthropic") {
-    if (isMiniMaxProvider(providerSlug, baseUrl)) {
-      return miniMaxFallbackModels(providerSlug);
-    }
-
-    // Anthropic: GET /v1/models
-    const url = base.endsWith("/v1") ? `${base}/models` : `${base}/v1/models`;
-    const resp = await proxyFetch(url, {
-      headers: {
-        "x-api-key": apiKey,
-        Authorization: `Bearer ${apiKey}`,
-        "anthropic-version": "2023-06-01",
-      },
-      timeoutSecs: 30,
-    });
-    if (resp.status >= 400) {
-      if (resp.status === 404 && isMiniMaxProvider(providerSlug, baseUrl)) {
-        return miniMaxFallbackModels(providerSlug);
-      }
-      throw new Error(`Anthropic API ${resp.status}: ${resp.body.slice(0, 200)}`);
-    }
-    const data = JSON.parse(resp.body);
-    return (data.data ?? [])
-      .map((m: any) => ({
-        id: String(m.id ?? "").trim(),
-        name: String(m.display_name ?? m.id ?? ""),
-        capabilities: inferCapabilities(String(m.id ?? ""), providerSlug),
-      }))
-      .filter((m: ListedModel) => m.id);
-  }
-
-  // OpenAI-compatible: GET /models
-  if (isMiniMaxProvider(providerSlug, baseUrl)) {
-    return miniMaxFallbackModels(providerSlug);
-  }
-
-  const url = `${base}/models`;
-  const resp = await proxyFetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    timeoutSecs: 30,
-  });
-  if (resp.status >= 400) {
-    if (resp.status === 404 && isMiniMaxProvider(providerSlug, baseUrl)) {
-      return miniMaxFallbackModels(providerSlug);
-    }
-    throw new Error(`API ${resp.status}: ${resp.body.slice(0, 200)}`);
-  }
-  const data = JSON.parse(resp.body);
-  return (data.data ?? [])
-    .map((m: any) => ({
-      id: String(m.id ?? "").trim(),
-      name: String(m.id ?? ""),
-      capabilities: inferCapabilities(String(m.id ?? ""), providerSlug),
-    }))
-    .filter((m: ListedModel) => m.id)
-    .sort((a: ListedModel, b: ListedModel) => a.id.localeCompare(b.id));
-}
-
-type EndpointDraft = {
-  name: string;
-  provider: string;
-  api_type: string;
-  base_url: string;
-  api_key_env: string;
-  model: string;
-  priority: number;
-  max_tokens: number;
-  context_window: number;
-  timeout: number;
-  capabilities: string[];
-  rpm_limit?: number;
-  note?: string | null;
-  pricing_tiers?: { max_input: number; input_price: number; output_price: number }[];
-};
-
-type PythonCandidate = {
-  command: string[];
-  versionText: string;
-  isUsable: boolean;
-};
-
-type EmbeddedPythonInstallResult = {
-  pythonCommand: string[];
-  pythonPath: string;
-  installDir: string;
-  assetName: string;
-  tag: string;
-};
-
-type InstallSource = "pypi" | "github" | "local";
-
-function slugify(input: string) {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-_]/g, "")
-    .slice(0, 32);
-}
-
-function joinPath(a: string, b: string) {
-  if (!a) return b;
-  const sep = a.includes("\\") ? "\\" : "/";
-  return a.replace(/[\\/]+$/, "") + sep + b.replace(/^[\\/]+/, "");
-}
-
-function toFileUrl(p: string) {
-  const t = p.trim();
-  if (!t) return "";
-  // Windows: D:\path\to\repo -> file:///D:/path/to/repo
-  if (/^[a-zA-Z]:[\\/]/.test(t)) {
-    const s = t.replace(/\\/g, "/");
-    return `file:///${s}`;
-  }
-  // POSIX: /Users/... -> file:///Users/...
-  if (t.startsWith("/")) {
-    return `file://${t}`;
-  }
-  // Fallback (best-effort)
-  return `file://${t}`;
-}
-
-function envKeyFromSlug(slug: string) {
-  const up = slug.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
-  return `${up}_API_KEY`;
-};
-
-function nextEnvKeyName(base: string, used: Set<string>) {
-  const b = base.trim();
-  if (!b) return base;
-  if (!used.has(b)) return b;
-  for (let i = 2; i < 100; i++) {
-    const k = `${b}_${i}`;
-    if (!used.has(k)) return k;
-  }
-  return `${b}_${Date.now()}`;
-}
-
-function suggestEndpointName(providerSlug: string, modelId: string) {
-  const p = (providerSlug || "provider").trim() || "provider";
-  const m = (modelId || "").trim();
-  if (!m) return `${p}-primary`.slice(0, 64);
-  // keep readable, avoid path separators in names
-  const clean = m.replace(/[\\/]+/g, "-");
-  return `${p}-${clean}`.slice(0, 64);
-}
-
-type EnvMap = Record<string, string>;
-
-function parseEnv(content: string): EnvMap {
-  const out: EnvMap = {};
-  for (const raw of content.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const idx = line.indexOf("=");
-    if (idx <= 0) continue;
-    const k = line.slice(0, idx).trim();
-    const v = line.slice(idx + 1);
-    out[k] = v;
-  }
-  return out;
-}
-
-function envGet(env: EnvMap, key: string, fallback = "") {
-  return env[key] ?? fallback;
-}
-
-function envSet(env: EnvMap, key: string, value: string): EnvMap {
-  return { ...env, [key]: value };
-}
-
-type StepId =
-  | "llm"
-  | "im"
-  | "tools"
-  | "agent"
-  | "workspace"
-  | "advanced";
-
-type Step = {
-  id: StepId;
-  title: string;
-  desc: string;
-};
-
-function SearchSelect({
-  value,
-  onChange,
-  options,
-  placeholder,
-  disabled,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
-  placeholder?: string;
-  disabled?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [hoverIdx, setHoverIdx] = useState(0);
-  const [search, setSearch] = useState(""); // 独立搜索词，与选中值分离
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const justSelected = useRef(false); // 跟踪用户是否刚从下拉中选了一项
-  const hasOptions = options.length > 0;
-
-  // 当有下拉选项时：显示文本 = 搜索词（正在搜索）或已选值
-  // 当无下拉选项时：直接使用 value 作为手动输入
-  const displayValue = hasOptions ? (search || value) : value;
-
-  const filtered = useMemo(() => {
-    if (!hasOptions) return [];
-    const q = search.trim().toLowerCase();
-    const list = q ? options.filter((x) => x.toLowerCase().includes(q)) : options;
-    return list.slice(0, 200);
-  }, [options, search, hasOptions]);
-
-  useEffect(() => {
-    if (hoverIdx >= filtered.length) setHoverIdx(0);
-  }, [filtered.length, hoverIdx]);
-
-  return (
-    <div ref={rootRef} style={{ position: "relative", flex: "1 1 auto", minWidth: 0 }}>
-      <div style={{ position: "relative" }}>
-        <input
-          ref={inputRef}
-          value={displayValue}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (hasOptions) {
-              setSearch(v);
-              setOpen(true);
-            }
-            // 始终通知父组件，确保外部 value 与输入框内容同步
-            onChange(v);
-          }}
-          placeholder={placeholder}
-          onFocus={() => { if (hasOptions) setOpen(true); }}
-          onBlur={() => {
-            // 延迟关闭，让 click 事件先触发
-            setTimeout(() => {
-              setOpen(false);
-              // 如果用户刚从下拉中选了一项，不要覆盖选择
-              if (justSelected.current) {
-                justSelected.current = false;
-                setSearch("");
-                return;
-              }
-              // onChange 已在每次键入时实时调用，这里只需清理搜索状态
-              if (hasOptions && search) {
-                setSearch("");
-              }
-            }, 150);
-          }}
-          onKeyDown={(e) => {
-            if (!hasOptions) return;
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setOpen(true);
-              setHoverIdx((i) => Math.min(i + 1, Math.max(filtered.length - 1, 0)));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setHoverIdx((i) => Math.max(i - 1, 0));
-            } else if (e.key === "Enter") {
-              if (open && filtered[hoverIdx]) {
-                e.preventDefault();
-                justSelected.current = true;
-                onChange(filtered[hoverIdx]);
-                setSearch("");
-                setOpen(false);
-              } else if (hasOptions && search.trim()) {
-                // 用户在有下拉选项时手动输入并回车确认
-                e.preventDefault();
-                justSelected.current = true;
-                onChange(search.trim());
-                setSearch("");
-                setOpen(false);
-              }
-            } else if (e.key === "Escape") {
-              setSearch("");
-              setOpen(false);
-            }
-          }}
-          disabled={disabled}
-          style={{ paddingRight: hasOptions ? (value ? 72 : 44) : 12 }}
-        />
-        {/* × 清空按钮：有选中值或搜索词时显示 */}
-        {hasOptions && (value || search) && !disabled && (
-          <button
-            type="button"
-            className="btnSmall"
-            onClick={() => {
-              setSearch("");
-              onChange("");
-              setOpen(true);
-              inputRef.current?.focus();
-            }}
-            style={{
-              position: "absolute",
-              right: 42,
-              top: "50%",
-              transform: "translateY(-50%)",
-              width: 26,
-              height: 26,
-              padding: 0,
-              borderRadius: 8,
-              display: "grid",
-              placeItems: "center",
-              fontSize: 14,
-              color: "var(--muted)",
-              opacity: 0.7,
-            }}
-            title="清空"
-          >
-            ✕
-          </button>
-        )}
-        {/* ▾ 下拉按钮：仅在有选项时显示 */}
-        {hasOptions && (
-          <button
-            type="button"
-            className="btnSmall"
-            onClick={() => {
-              if (!open) { setSearch(""); }
-              setOpen((v) => !v);
-              inputRef.current?.focus();
-            }}
-            disabled={disabled}
-            style={{
-              position: "absolute",
-              right: 8,
-              top: "50%",
-              transform: "translateY(-50%)",
-              width: 34,
-              height: 30,
-              padding: 0,
-              borderRadius: 10,
-              display: "grid",
-              placeItems: "center",
-            }}
-          >
-            ▾
-          </button>
-        )}
-      </div>
-      {open && hasOptions && !disabled ? (
-        <div
-          style={{
-            position: "absolute",
-            zIndex: 50,
-            left: 0,
-            right: 0,
-            marginTop: 6,
-            maxHeight: 280,
-            overflow: "auto",
-            border: "1px solid var(--line)",
-            borderRadius: 14,
-            background: "var(--panel2)",
-            boxShadow: "0 18px 60px rgba(17, 24, 39, 0.14)",
-          }}
-          onMouseDown={(e) => {
-            // prevent input blur before click
-            e.preventDefault();
-          }}
-        >
-          {filtered.length === 0 ? (
-            <div style={{ padding: 12, color: "var(--muted)", fontWeight: 650 }}>没有匹配项</div>
-          ) : (
-            filtered.map((opt, idx) => (
-              <div
-                key={opt}
-                onMouseEnter={() => setHoverIdx(idx)}
-                onClick={() => {
-                  justSelected.current = true;
-                  onChange(opt);
-                  setSearch("");
-                  setOpen(false);
-                }}
-                style={{
-                  padding: "10px 12px",
-                  cursor: "pointer",
-                  fontWeight: 650,
-                  background: opt === value
-                    ? "rgba(14, 165, 233, 0.16)"
-                    : idx === hoverIdx
-                      ? "rgba(14, 165, 233, 0.06)"
-                      : "transparent",
-                  borderTop: idx === 0 ? "none" : "1px solid rgba(17,24,39,0.06)",
-                }}
-              >
-                {opt === value ? `✓ ${opt}` : opt}
-              </div>
-            ))
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** 服务商搜索选择器：支持 value/label 选项对，大小写模糊匹配 */
-function ProviderSearchSelect({
-  value,
-  onChange,
-  options,
-  placeholder,
-  disabled,
-  extraOptions,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: { value: string; label: string }[];
-  placeholder?: string;
-  disabled?: boolean;
-  extraOptions?: { value: string; label: string }[];
-}) {
-  const [open, setOpen] = useState(false);
-  const [hoverIdx, setHoverIdx] = useState(0);
-  const [search, setSearch] = useState("");
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const justSelected = useRef(false);
-
-  const allOptions = useMemo(() => {
-    const base = options.slice();
-    if (extraOptions) base.push(...extraOptions);
-    return base;
-  }, [options, extraOptions]);
-
-  const selectedLabel = useMemo(
-    () => allOptions.find((o) => o.value === value)?.label ?? "",
-    [allOptions, value],
-  );
-
-  const displayValue = search || selectedLabel;
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const list = q
-      ? allOptions.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q))
-      : allOptions;
-    return list.slice(0, 200);
-  }, [allOptions, search]);
-
-  useEffect(() => {
-    if (hoverIdx >= filtered.length) setHoverIdx(0);
-  }, [filtered.length, hoverIdx]);
-
-  return (
-    <div ref={rootRef} style={{ position: "relative" }}>
-      <div style={{ position: "relative" }}>
-        <input
-          ref={inputRef}
-          value={displayValue}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setOpen(true);
-          }}
-          placeholder={placeholder || "搜索服务商..."}
-          onFocus={() => { setSearch(""); setOpen(true); }}
-          onBlur={() => {
-            setTimeout(() => {
-              setOpen(false);
-              if (justSelected.current) {
-                justSelected.current = false;
-                return;
-              }
-              setSearch("");
-            }, 150);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setOpen(true);
-              setHoverIdx((i) => Math.min(i + 1, Math.max(filtered.length - 1, 0)));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setHoverIdx((i) => Math.max(i - 1, 0));
-            } else if (e.key === "Enter") {
-              if (open && filtered[hoverIdx]) {
-                e.preventDefault();
-                justSelected.current = true;
-                onChange(filtered[hoverIdx].value);
-                setSearch("");
-                setOpen(false);
-              }
-            } else if (e.key === "Escape") {
-              setSearch("");
-              setOpen(false);
-            }
-          }}
-          disabled={disabled}
-          style={{ paddingRight: 44, width: "100%", padding: "8px 44px 8px 10px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 13 }}
-        />
-        <button
-          type="button"
-          className="btnSmall"
-          onClick={() => {
-            if (!open) { setSearch(""); }
-            setOpen((v) => !v);
-            inputRef.current?.focus();
-          }}
-          disabled={disabled}
-          style={{
-            position: "absolute",
-            right: 8,
-            top: "50%",
-            transform: "translateY(-50%)",
-            width: 34,
-            height: 30,
-            padding: 0,
-            borderRadius: 10,
-            display: "grid",
-            placeItems: "center",
-          }}
-        >
-          ▾
-        </button>
-      </div>
-      {open && !disabled ? (
-        <div
-          style={{
-            position: "absolute",
-            zIndex: 50,
-            left: 0,
-            right: 0,
-            marginTop: 6,
-            maxHeight: 280,
-            overflow: "auto",
-            border: "1px solid var(--line)",
-            borderRadius: 14,
-            background: "var(--panel2)",
-            boxShadow: "0 18px 60px rgba(17, 24, 39, 0.14)",
-          }}
-          onMouseDown={(e) => { e.preventDefault(); }}
-        >
-          {filtered.length === 0 ? (
-            <div style={{ padding: 12, color: "var(--muted)", fontWeight: 650 }}>没有匹配项</div>
-          ) : (
-            filtered.map((opt, idx) => (
-              <div
-                key={opt.value}
-                onMouseEnter={() => setHoverIdx(idx)}
-                onClick={() => {
-                  justSelected.current = true;
-                  onChange(opt.value);
-                  setSearch("");
-                  setOpen(false);
-                }}
-                style={{
-                  padding: "10px 12px",
-                  cursor: "pointer",
-                  fontWeight: 650,
-                  background: opt.value === value
-                    ? "rgba(14, 165, 233, 0.16)"
-                    : idx === hoverIdx
-                      ? "rgba(14, 165, 233, 0.06)"
-                      : "transparent",
-                  borderTop: idx === 0 ? "none" : "1px solid rgba(17,24,39,0.06)",
-                }}
-              >
-                {opt.value === value ? `✓ ${opt.label}` : opt.label}
-              </div>
-            ))
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-const PIP_INDEX_PRESETS: { id: "official" | "tuna" | "aliyun" | "custom"; label: string; url: string }[] = [
-  { id: "aliyun", label: "阿里云（默认）", url: "https://mirrors.aliyun.com/pypi/simple/" },
-  { id: "tuna", label: "清华 TUNA", url: "https://pypi.tuna.tsinghua.edu.cn/simple" },
-  { id: "official", label: "官方 PyPI", url: "https://pypi.org/simple/" },
-  { id: "custom", label: "自定义…", url: "" },
-];
-
-/**
- * fetch wrapper: 在 HTTP 4xx/5xx 时自动抛异常（原生 fetch 只在网络错误时才抛）。
- * 所有对后端 API 的调用都应使用此函数，以确保错误被正确捕获。
- */
-async function safeFetch(url: string, init?: RequestInit): Promise<Response> {
-  // Apply a default timeout (10s) if the caller didn't supply an AbortSignal
-  const effectiveInit = init?.signal ? init : { ...init, signal: AbortSignal.timeout(10_000) };
-  const res = await fetch(url, effectiveInit);
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.text();
-      if (body) detail = body.slice(0, 200);
-    } catch { /* ignore */ }
-    throw new Error(`HTTP ${res.status}: ${detail}`);
-  }
-  return res;
-}
-
-/**
- * 通过 Rust http_proxy_request 命令发送 HTTP 请求，绕过 WebView 的 CORS 限制。
- * 当前端需要直连外部 API（如 LLM 服务商）但 Python 后端未运行时使用。
- */
-async function proxyFetch(url: string, options?: {
-  method?: string;
-  headers?: Record<string, string>;
-  body?: string;
-  timeoutSecs?: number;
-}): Promise<{ status: number; body: string }> {
-  const raw = await invoke<string>("http_proxy_request", {
-    url,
-    method: options?.method ?? "GET",
-    headers: options?.headers ?? null,
-    body: options?.body ?? null,
-    timeoutSecs: options?.timeoutSecs ?? 30,
-  });
-  return JSON.parse(raw) as { status: number; body: string };
-}
-
-// ── 故障排除面板组件 ──
-function TroubleshootPanel({ t }: { t: (k: string) => string }) {
-  const [copied, setCopied] = useState<string | null>(null);
-  const isWin = navigator.platform?.toLowerCase().includes("win");
-  const listCmd = isWin ? 'tasklist | findstr python' : 'ps aux | grep openakita';
-  const killCmd = isWin ? 'taskkill /F /PID <PID>' : 'kill -9 <PID>';
-
-  const copyText = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(id);
-    setTimeout(() => setCopied(null), 1500);
-  };
-
-  return (
-    <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--panel2)", borderRadius: 6, fontSize: 12, color: "var(--text)", border: "1px solid var(--line)" }}>
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>{t("status.troubleshootTitle")}</div>
-      <div style={{ marginBottom: 4, color: "var(--muted)" }}>{t("status.troubleshootTip")}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ color: "var(--muted)", minWidth: 60 }}>{t("status.troubleshootListProcess")}:</span>
-          <code style={{ background: "var(--nav-hover)", border: "1px solid var(--line)", padding: "1px 6px", borderRadius: 3, fontSize: 11, flex: 1, color: "var(--text)" }}>{listCmd}</code>
-          <button className="btnSmall" style={{ fontSize: 10, padding: "1px 6px" }} onClick={() => copyText(listCmd, "list")}>
-            {copied === "list" ? t("status.troubleshootCopied") : t("status.troubleshootCopy")}
-          </button>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ color: "var(--muted)", minWidth: 60 }}>{t("status.troubleshootKillProcess")}:</span>
-          <code style={{ background: "var(--nav-hover)", border: "1px solid var(--line)", padding: "1px 6px", borderRadius: 3, fontSize: 11, flex: 1, color: "var(--text)" }}>{killCmd}</code>
-          <button className="btnSmall" style={{ fontSize: 10, padding: "1px 6px" }} onClick={() => copyText(killCmd, "kill")}>
-            {copied === "kill" ? t("status.troubleshootCopied") : t("status.troubleshootCopy")}
-          </button>
-        </div>
-      </div>
-      <div style={{ marginTop: 6, color: "var(--muted)", fontSize: 11 }}>{t("status.troubleshootRestart")}</div>
-    </div>
-  );
-}
+import { SearchSelect } from "./components/SearchSelect";
+import { ProviderSearchSelect } from "./components/ProviderSearchSelect";
+import { TroubleshootPanel } from "./components/TroubleshootPanel";
+import { CliManager } from "./components/CliManager";
+import { FieldText, FieldBool, FieldSelect, FieldCombo, TelegramPairingCodeHint } from "./components/EnvFields";
+import { ConfirmDialog } from "./components/ConfirmDialog";
+import { ToastContainer } from "./components/ToastContainer";
+import { Sidebar } from "./components/Sidebar";
+import { Topbar } from "./components/Topbar";
+import { useNotifications } from "./hooks/useNotifications";
+import { useVersionCheck, compareSemver } from "./hooks/useVersionCheck";
 
 export function App() {
   const { t, i18n } = useTranslation();
@@ -955,22 +83,8 @@ export function App() {
   const [info, setInfo] = useState<PlatformInfo | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  // Auto-dismiss notice after 4s
-  useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 4000);
-    return () => clearTimeout(t);
-  }, [notice]);
-  const [busy, setBusy] = useState<string | null>(null);
+  const { error, setError, notice, setNotice, busy, setBusy, confirmDialog, setConfirmDialog, askConfirm } = useNotifications();
   const [dangerAck, setDangerAck] = useState(false);
-
-  // ── Generic confirm dialog ──
-  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
-  function askConfirm(message: string, onConfirm: () => void) {
-    setConfirmDialog({ message, onConfirm });
-  }
 
   // ── Restart overlay state ──
   const [restartOverlay, setRestartOverlay] = useState<{ phase: "saving" | "restarting" | "waiting" | "done" | "fail" | "notRunning" } | null>(null);
@@ -981,19 +95,14 @@ export function App() {
   // ── Service conflict & version state ──
   const [conflictDialog, setConflictDialog] = useState<{ pid: number; version: string } | null>(null);
   const [pendingStartWsId, setPendingStartWsId] = useState<string | null>(null); // workspace ID waiting for conflict resolution
-  const [versionMismatch, setVersionMismatch] = useState<{ backend: string; desktop: string } | null>(null);
-  const [newRelease, setNewRelease] = useState<{ latest: string; current: string; url: string } | null>(null);
-  // ── Auto-updater state ──
-  const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null);
-  const [updateProgress, setUpdateProgress] = useState<{ status: "idle" | "downloading" | "installing" | "done" | "error"; percent?: number; error?: string }>({ status: "idle" });
-  const [desktopVersion, setDesktopVersion] = useState("0.0.0");
-  const [backendVersion, setBackendVersion] = useState<string | null>(null);
-  const GITHUB_REPO = "openakita/openakita";
-
-  // Read desktop app version from Tauri on mount
-  useEffect(() => {
-    getVersion().then((v) => setDesktopVersion(v)).catch(() => setDesktopVersion("1.10.5")); // fallback
-  }, []);
+  const {
+    desktopVersion, backendVersion, setBackendVersion,
+    versionMismatch, setVersionMismatch,
+    newRelease, setNewRelease,
+    updateAvailable, setUpdateAvailable, updateProgress, setUpdateProgress,
+    checkVersionMismatch, checkForAppUpdate,
+    doDownloadAndInstall, doRelaunchAfterUpdate,
+  } = useVersionCheck();
 
   // ── 独立初始化 autostart 状态（不依赖 refreshStatus 的复杂前置条件） ──
   useEffect(() => {
@@ -4120,121 +3229,8 @@ export function App() {
     return null;
   }
 
-  /**
-   * 检查后端服务版本与桌面端版本是否一致。
-   * 在成功连接到服务后调用。
-   */
-  function checkVersionMismatch(backendVersion: string) {
-    if (!backendVersion || backendVersion === "0.0.0-dev") return;
-    if (!desktopVersion || desktopVersion === "0.0.0") return; // not yet loaded from Tauri
-    // Normalize: strip leading 'v'
-    const bv = backendVersion.replace(/^v/, "");
-    const dv = desktopVersion.replace(/^v/, "");
-    if (bv !== dv) {
-      setVersionMismatch({ backend: bv, desktop: dv });
-    } else {
-      setVersionMismatch(null);
-    }
-  }
-
-  /**
-   * 比较两个语义化版本号，返回：
-   *  1  — a > b
-   *  0  — a == b
-   * -1  — a < b
-   * 仅比较 major.minor.patch 数字部分，忽略预发布后缀。
-   */
-  function compareSemver(a: string, b: string): number {
-    const parse = (v: string) => v.replace(/^v/, "").split(".").map((s) => parseInt(s, 10) || 0);
-    const pa = parse(a);
-    const pb = parse(b);
-    for (let i = 0; i < 3; i++) {
-      if ((pa[i] ?? 0) > (pb[i] ?? 0)) return 1;
-      if ((pa[i] ?? 0) < (pb[i] ?? 0)) return -1;
-    }
-    return 0;
-  }
-
-  /**
-   * 使用 Tauri Plugin Updater 检查更新。
-   * 回退机制：如果 Tauri updater 端点不可用，降级到 GitHub API 检查。
-   */
-  async function checkForAppUpdate() {
-    const dismissKey = "openakita_release_dismissed";
-    try {
-      const update = await checkUpdate();
-      if (update) {
-        const dismissed = localStorage.getItem(dismissKey);
-        if (dismissed !== update.version) {
-          setUpdateAvailable(update);
-          setNewRelease({
-            latest: update.version,
-            current: desktopVersion,
-            url: `https://github.com/${GITHUB_REPO}/releases/tag/v${update.version}`,
-          });
-        }
-      }
-    } catch {
-      // Tauri updater failed (e.g., endpoint unreachable) — fallback to GitHub API
-      try {
-        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-          signal: AbortSignal.timeout(4000),
-          headers: { Accept: "application/vnd.github.v3+json" },
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        const tagName = (data.tag_name || "").replace(/^v/, "");
-        if (tagName && compareSemver(tagName, desktopVersion) > 0) {
-          const dismissed = localStorage.getItem(dismissKey);
-          if (dismissed !== tagName) {
-            setNewRelease({
-              latest: tagName,
-              current: desktopVersion,
-              url: data.html_url || `https://github.com/${GITHUB_REPO}/releases`,
-            });
-          }
-        }
-      } catch { /* both methods failed, silently ignore */ }
-    }
-  }
-
-  /**
-   * 用户确认更新后，下载并安装更新包。
-   */
-  async function doDownloadAndInstall() {
-    if (!updateAvailable) return;
-    setUpdateProgress({ status: "downloading", percent: 0 });
-    try {
-      let totalBytes = 0;
-      let downloadedBytes = 0;
-      await updateAvailable.downloadAndInstall((event) => {
-        if (event.event === "Started" && event.data.contentLength) {
-          totalBytes = event.data.contentLength;
-        } else if (event.event === "Progress") {
-          downloadedBytes += event.data.chunkLength;
-          const percent = totalBytes > 0 ? Math.round((downloadedBytes / totalBytes) * 100) : 0;
-          setUpdateProgress({ status: "downloading", percent });
-        } else if (event.event === "Finished") {
-          setUpdateProgress({ status: "installing" });
-        }
-      });
-      setUpdateProgress({ status: "done" });
-    } catch (err) {
-      setUpdateProgress({ status: "error", error: String(err) });
-    }
-  }
-
-  /**
-   * 更新安装完成后重启应用。
-   */
-  async function doRelaunchAfterUpdate() {
-    try {
-      await relaunch();
-    } catch {
-      // Fallback: just tell the user to restart manually
-      setUpdateProgress({ status: "error", error: "请手动重启应用以完成更新" });
-    }
-  }
+  // checkVersionMismatch, compareSemver, checkForAppUpdate, doDownloadAndInstall, doRelaunchAfterUpdate
+  // -> extracted to ./hooks/useVersionCheck.ts
 
   /**
    * 包装本地服务启动流程：检测冲突 → 处理冲突 → 启动。
@@ -4563,20 +3559,6 @@ export function App() {
   }
 
 
-  const stepIcons: Record<StepId, React.ReactNode> = {
-    llm: <IconZap size={14} />,
-    im: <IconIM size={14} />,
-    tools: <IconSkills size={14} />,
-    agent: <IconBot size={14} />,
-    workspace: <IconBook size={14} />,
-    advanced: <IconGear size={14} />,
-  };
-
-  const StepDot = ({ stepId: sid }: { stepId: StepId }) => (
-    <div className="stepDot">
-      {stepIcons[sid]}
-    </div>
-  );
 
   function renderStatus() {
     const effectiveWsId = currentWorkspaceId || workspaces[0]?.id || null;
@@ -5794,177 +4776,18 @@ export function App() {
     );
   }
 
-  // ── Helper: env field for IM / Tools / Agent config pages ──
-  function FieldText({
-    k, label, placeholder, help, type,
-  }: { k: string; label: string; placeholder?: string; help?: string; type?: "text" | "password"; }) {
-    const isSecret = (type || "text") === "password";
-    const shown = !!secretShown[k];
-    return (
-      <div className="field">
-        <div className="labelRow">
-          <div className="label">
-            {label}
-            {help && <span className="fieldTip" title={help}><IconInfo size={13} /></span>}
-          </div>
-          {k ? <div className="help">{k}</div> : null}
-        </div>
-        <div style={{ position: "relative" }}>
-          <input
-            value={envGet(envDraft, k)}
-            onChange={(e) => setEnvDraft((m) => envSet(m, k, e.target.value))}
-            placeholder={placeholder}
-            type={isSecret ? (shown ? "text" : "password") : "text"}
-            style={isSecret ? { paddingRight: 44 } : undefined}
-          />
-          {isSecret && (
-            <button type="button" className="btnEye"
-              onClick={() => setSecretShown((m) => ({ ...m, [k]: !m[k] }))}
-              disabled={!!busy}
-              title={shown ? t("skills.hide") : t("skills.show")}>
-              {shown ? <IconEyeOff size={16} /> : <IconEye size={16} />}
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  function FieldBool({ k, label, help, defaultValue }: { k: string; label: string; help?: string; defaultValue?: boolean }) {
-    const v = envGet(envDraft, k, defaultValue ? "true" : "false").toLowerCase() === "true";
-    return (
-      <div className="field">
-        <div className="labelRow">
-          <div className="label">
-            {label}
-            {help && <span className="fieldTip" title={help}><IconInfo size={13} /></span>}
-          </div>
-          <div className="help">{k}</div>
-        </div>
-        <label className="pill" style={{ cursor: "pointer" }}>
-          <input style={{ width: 16, height: 16 }} type="checkbox" checked={v}
-            onChange={(e) => setEnvDraft((m) => envSet(m, k, String(e.target.checked)))} />
-          {t("skills.enabled")}
-        </label>
-      </div>
-    );
-  }
-
-  /** 读取并显示当前 Telegram 配对码（从 data/telegram/pairing/pairing_code.txt 文件）*/
-  function TelegramPairingCodeHint() {
-    const [currentCode, setCurrentCode] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
-
-    const loadCode = useCallback(async () => {
-      if (!currentWorkspaceId) return;
-      setLoading(true);
-      try {
-        const code = await invoke<string>("workspace_read_file", {
-          workspaceId: currentWorkspaceId,
-          relativePath: "data/telegram/pairing/pairing_code.txt",
-        });
-        setCurrentCode(code.trim());
-      } catch {
-        setCurrentCode(null);
-      } finally {
-        setLoading(false);
-      }
-    }, [currentWorkspaceId]);
-
-    useEffect(() => { loadCode(); }, [loadCode]);
-
-    return (
-      <div style={{
-        fontSize: 12, color: "var(--text3, #666)", margin: "4px 0 0 0", lineHeight: 1.7,
-        display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
-      }}>
-        <span>🔑 {t("config.imCurrentPairingCode")}：</span>
-        {loading ? (
-          <span style={{ opacity: 0.5 }}>...</span>
-        ) : currentCode ? (
-          <code style={{
-            background: "var(--bg2, #f5f5f5)", padding: "2px 8px", borderRadius: 4,
-            fontSize: 13, fontWeight: 600, letterSpacing: 2, userSelect: "all",
-          }}>{currentCode}</code>
-        ) : (
-          <span style={{ opacity: 0.5 }}>{t("config.imPairingCodeNotGenerated")}</span>
-        )}
-        <button
-          type="button"
-          className="btnSmall"
-          style={{ fontSize: 11, padding: "1px 8px" }}
-          onClick={loadCode}
-          disabled={loading}
-        >↻ {t("common.refresh")}</button>
-      </div>
-    );
-  }
-
-  function FieldSelect({
-    k, label, options, help,
-  }: { k: string; label: string; options: { value: string; label: string }[]; help?: string; }) {
-    return (
-      <div className="field">
-        <div className="labelRow">
-          <div className="label">
-            {label}
-            {help && <span className="fieldTip" title={help}><IconInfo size={13} /></span>}
-          </div>
-          {k ? <div className="help">{k}</div> : null}
-        </div>
-        <select
-          value={envGet(envDraft, k)}
-          onChange={(e) => setEnvDraft((m) => envSet(m, k, e.target.value))}
-        >
-          {options.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
-      </div>
-    );
-  }
-
-  function FieldCombo({
-    k, label, options, placeholder, help,
-  }: { k: string; label: string; options: { value: string; label: string }[]; placeholder?: string; help?: string; }) {
-    const currentVal = envGet(envDraft, k);
-    const isPreset = options.some((o) => o.value === currentVal);
-    return (
-      <div className="field">
-        <div className="labelRow">
-          <div className="label">
-            {label}
-            {help && <span className="fieldTip" title={help}><IconInfo size={13} /></span>}
-          </div>
-          {k ? <div className="help">{k}</div> : null}
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <select
-            style={{ flex: "0 0 auto", minWidth: 140 }}
-            value={isPreset ? currentVal : "__custom__"}
-            onChange={(e) => {
-              if (e.target.value !== "__custom__") {
-                setEnvDraft((m) => envSet(m, k, e.target.value));
-              }
-            }}
-          >
-            {options.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-            <option value="__custom__">{t("common.custom") || "自定义..."}</option>
-          </select>
-          {(!isPreset || currentVal === "") && (
-            <input
-              style={{ flex: 1 }}
-              value={currentVal}
-              onChange={(e) => setEnvDraft((m) => envSet(m, k, e.target.value))}
-              placeholder={placeholder || t("common.custom") || "自定义输入..."}
-            />
-          )}
-        </div>
-      </div>
-    );
-  }
+  // FieldText/FieldBool/FieldSelect/FieldCombo/TelegramPairingCodeHint -> ./components/EnvFields.tsx
+  // Wrapper closures that pass envDraft/onEnvChange automatically to extracted field components
+  const _envBase = { envDraft, onEnvChange: setEnvDraft, busy };
+  const _secretCtx = { secretShown, onToggleSecret: (k: string) => setSecretShown((m: Record<string, boolean>) => ({ ...m, [k]: !m[k] })) };
+  const FT = (p: { k: string; label: string; placeholder?: string; help?: string; type?: "text" | "password" }) =>
+    <FieldText {...p} {..._envBase} {..._secretCtx} />;
+  const FB = (p: { k: string; label: string; help?: string; defaultValue?: boolean }) =>
+    <FieldBool {...p} {..._envBase} />;
+  const FS = (p: { k: string; label: string; options: { value: string; label: string }[]; help?: string }) =>
+    <FieldSelect {...p} {..._envBase} />;
+  const FC = (p: { k: string; label: string; options: { value: string; label: string }[]; placeholder?: string; help?: string }) =>
+    <FieldCombo {...p} {..._envBase} />;
 
   async function renderIntegrationsSave(keys: string[], successText: string) {
     if (!currentWorkspaceId) { setError(t("common.error")); return; }
@@ -5978,191 +4801,14 @@ export function App() {
     }
   }
 
+  const _configViewProps = {
+    envDraft, setEnvDraft, busy, secretShown,
+    onToggleSecret: (k: string) => setSecretShown((m: Record<string, boolean>) => ({ ...m, [k]: !m[k] })),
+    currentWorkspaceId, setNotice,
+  };
+
   function renderIM() {
-    const keysIM = [
-      "IM_CHAIN_PUSH",
-      "TELEGRAM_ENABLED", "TELEGRAM_BOT_TOKEN", "TELEGRAM_PROXY",
-      "TELEGRAM_REQUIRE_PAIRING", "TELEGRAM_PAIRING_CODE", "TELEGRAM_WEBHOOK_URL",
-      "FEISHU_ENABLED", "FEISHU_APP_ID", "FEISHU_APP_SECRET",
-      "WEWORK_ENABLED", "WEWORK_CORP_ID",
-      "WEWORK_TOKEN", "WEWORK_ENCODING_AES_KEY", "WEWORK_CALLBACK_PORT", "WEWORK_CALLBACK_HOST",
-      "DINGTALK_ENABLED", "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
-      "ONEBOT_ENABLED", "ONEBOT_WS_URL", "ONEBOT_ACCESS_TOKEN",
-      "QQBOT_ENABLED", "QQBOT_APP_ID", "QQBOT_APP_SECRET", "QQBOT_SANDBOX", "QQBOT_MODE", "QQBOT_WEBHOOK_PORT", "QQBOT_WEBHOOK_PATH",
-    ];
-
-    const channels = [
-      {
-        title: "Telegram",
-        appType: t("config.imTypeLongPolling"),
-        logo: <LogoTelegram size={22} />,
-        enabledKey: "TELEGRAM_ENABLED",
-        docUrl: "https://t.me/BotFather",
-        needPublicIp: false,
-        body: (
-          <>
-            <FieldText k="TELEGRAM_BOT_TOKEN" label={t("config.imBotToken")} placeholder="BotFather token" type="password" />
-            <FieldText k="TELEGRAM_PROXY" label={t("config.imProxy")} placeholder="http://127.0.0.1:7890" />
-            <FieldBool k="TELEGRAM_REQUIRE_PAIRING" label={t("config.imPairing")} />
-            <FieldText k="TELEGRAM_PAIRING_CODE" label={t("config.imPairingCode")} placeholder={t("config.imPairingCodeHint")} />
-            <TelegramPairingCodeHint />
-            <FieldText k="TELEGRAM_WEBHOOK_URL" label="Webhook URL" placeholder="https://..." />
-          </>
-        ),
-      },
-      {
-        title: t("config.imFeishu"),
-        appType: t("config.imTypeCustomApp"),
-        logo: <LogoFeishu size={22} />,
-        enabledKey: "FEISHU_ENABLED",
-        docUrl: "https://open.feishu.cn/",
-        needPublicIp: false,
-        body: (
-          <>
-            <FieldText k="FEISHU_APP_ID" label="App ID" />
-            <FieldText k="FEISHU_APP_SECRET" label="App Secret" type="password" />
-          </>
-        ),
-      },
-      {
-        title: t("config.imWework"),
-        appType: t("config.imTypeSmartBot"),
-        logo: <LogoWework size={22} />,
-        enabledKey: "WEWORK_ENABLED",
-        docUrl: "https://work.weixin.qq.com/",
-        needPublicIp: true,
-        body: (
-          <>
-            <FieldText k="WEWORK_CORP_ID" label="Corp ID" help={t("config.imWeworkCorpIdHelp")} />
-            <FieldText k="WEWORK_TOKEN" label="Callback Token" help={t("config.imWeworkTokenHelp")} />
-            <FieldText k="WEWORK_ENCODING_AES_KEY" label="EncodingAESKey" type="password" help={t("config.imWeworkAesKeyHelp")} />
-            <FieldText k="WEWORK_CALLBACK_PORT" label={t("config.imCallbackPort")} placeholder="9880" />
-            <div className="fieldHint" style={{ fontSize: 12, color: "var(--text3)", margin: "4px 0 0 0", lineHeight: 1.6 }}>
-              💡 {t("config.imWeworkCallbackUrlHint")}<code style={{ background: "var(--bg2)", padding: "1px 5px", borderRadius: 4, fontSize: 11 }}>http://your-domain:9880/callback</code>
-            </div>
-          </>
-        ),
-      },
-      {
-        title: t("config.imDingtalk"),
-        appType: t("config.imTypeInternalApp"),
-        logo: <LogoDingtalk size={22} />,
-        enabledKey: "DINGTALK_ENABLED",
-        docUrl: "https://open.dingtalk.com/",
-        needPublicIp: false,
-        body: (
-          <>
-            <FieldText k="DINGTALK_CLIENT_ID" label="Client ID" />
-            <FieldText k="DINGTALK_CLIENT_SECRET" label="Client Secret" type="password" />
-          </>
-        ),
-      },
-      {
-        title: "QQ 机器人",
-        appType: `${t("config.imTypeQQBot")} (${(envDraft["QQBOT_MODE"] || "websocket") === "webhook" ? "Webhook" : "WebSocket"})`,
-        logo: <LogoQQ size={22} />,
-        enabledKey: "QQBOT_ENABLED",
-        docUrl: "https://bot.q.qq.com/wiki/develop/api-v2/",
-        needPublicIp: false,
-        body: (
-          <>
-            <FieldText k="QQBOT_APP_ID" label="AppID" placeholder="q.qq.com 开发设置" />
-            <FieldText k="QQBOT_APP_SECRET" label="AppSecret" type="password" placeholder="q.qq.com 开发设置" />
-            <FieldBool k="QQBOT_SANDBOX" label={t("config.imQQBotSandbox")} />
-            <div style={{ marginTop: 8 }}>
-              <div className="label">{t("config.imQQBotMode")}</div>
-              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                {["websocket", "webhook"].map((m) => (
-                  <button key={m} className={(envDraft["QQBOT_MODE"] || "websocket") === m ? "capChipActive" : "capChip"}
-                    onClick={() => setEnvDraft((d) => ({ ...d, QQBOT_MODE: m }))}>{m === "websocket" ? "WebSocket" : "Webhook"}</button>
-                ))}
-              </div>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-                {(envDraft["QQBOT_MODE"] || "websocket") === "websocket"
-                  ? t("config.imQQBotModeWsHint")
-                  : t("config.imQQBotModeWhHint")}
-              </div>
-            </div>
-            {(envDraft["QQBOT_MODE"] === "webhook") && (
-              <>
-                <FieldText k="QQBOT_WEBHOOK_PORT" label={t("config.imQQBotWebhookPort")} placeholder="9890" />
-                <FieldText k="QQBOT_WEBHOOK_PATH" label={t("config.imQQBotWebhookPath")} placeholder="/qqbot/callback" />
-              </>
-            )}
-          </>
-        ),
-      },
-      {
-        title: "OneBot",
-        appType: t("config.imTypeOneBot"),
-        logo: <LogoQQ size={22} />,
-        enabledKey: "ONEBOT_ENABLED",
-        docUrl: "https://github.com/botuniverse/onebot-11",
-        needPublicIp: false,
-        body: (
-          <>
-            <FieldText k="ONEBOT_WS_URL" label="WebSocket URL" placeholder="ws://127.0.0.1:8080" />
-            <FieldText k="ONEBOT_ACCESS_TOKEN" label="Access Token" type="password" placeholder={t("config.imOneBotTokenHint")} />
-          </>
-        ),
-      },
-    ];
-
-    return (
-      <>
-        <div className="card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div className="cardTitle">{t("config.imTitle")}</div>
-            <button className="btnSmall" style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}
-              onClick={() => { navigator.clipboard.writeText("https://github.com/anthropic-lab/openakita/blob/main/docs/im-channels.md"); setNotice(t("config.imGuideDocCopied")); }}
-              title={t("config.imGuideDoc")}
-            ><IconBook size={13} />{t("config.imGuideDoc")}</button>
-          </div>
-          <div className="cardHint">{t("config.imHint")}</div>
-          <div className="divider" />
-
-          {/* IM 全局设置 */}
-          <FieldBool k="IM_CHAIN_PUSH" label={t("config.imChainPush")} help={t("config.imChainPushHelp")} />
-          <div className="divider" />
-
-          {channels.map((c) => {
-            const enabled = envGet(envDraft, c.enabledKey, "false").toLowerCase() === "true";
-            return (
-              <div key={c.enabledKey} className="card" style={{ marginTop: 10 }}>
-                <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                  <div className="row" style={{ alignItems: "center", gap: 10 }}>
-                    {c.logo}
-                    <span className="label" style={{ marginBottom: 0 }}>{c.title}</span>
-                    <span className="pill" style={{ fontSize: 10, padding: "1px 6px", background: "#f1f5f9", color: "#475569" }}>{c.appType}</span>
-                    {c.needPublicIp && <span className="pill" style={{ fontSize: 10, padding: "1px 6px", background: "#fef3c7", color: "#92400e" }}>{t("config.imNeedPublicIp")}</span>}
-                  </div>
-                  <label className="pill" style={{ cursor: "pointer", userSelect: "none" }}>
-                    <input style={{ width: 16, height: 16 }} type="checkbox" checked={enabled}
-                      onChange={(e) => setEnvDraft((m) => envSet(m, c.enabledKey, String(e.target.checked)))} />
-                    {t("config.enable")}
-                  </label>
-                </div>
-                <div className="row" style={{ alignItems: "center", gap: 6, marginTop: 4 }}>
-                  <button className="btnSmall"
-                    style={{ fontSize: 11, padding: "2px 8px", display: "inline-flex", alignItems: "center", gap: 3 }}
-                    title={c.docUrl}
-                    onClick={() => { navigator.clipboard.writeText(c.docUrl); setNotice(t("config.imDocCopied")); }}
-                  ><IconClipboard size={12} />{t("config.imDoc")}</button>
-                  <span className="help" style={{ fontSize: 11, userSelect: "all", opacity: 0.6 }}>{c.docUrl}</span>
-                </div>
-                {enabled && (
-                  <>
-                    <div className="divider" />
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{c.body}</div>
-                  </>
-                )}
-              </div>
-            );
-          })}
-
-        </div>
-      </>
-    );
+    return <IMConfigView {..._configViewProps} />;
   }
 
   function renderTools() {
@@ -6197,22 +4843,22 @@ export function App() {
           <details className="configDetails" open>
             <summary>{t("config.toolsMCP")}</summary>
             <div className="configDetailsBody">
-              <FieldBool k="MCP_ENABLED" label={t("config.toolsMCPEnable")} help={t("config.toolsMCPEnableHelp")} />
+              <FB k="MCP_ENABLED" label={t("config.toolsMCPEnable")} help={t("config.toolsMCPEnableHelp")} />
               <div className="grid2">
-                <FieldBool k="MCP_BROWSER_ENABLED" label="Browser MCP" help={t("config.toolsMCPBrowserHelp")} />
-                <FieldText k="MCP_TIMEOUT" label="Timeout (s)" placeholder="60" />
+                <FB k="MCP_BROWSER_ENABLED" label="Browser MCP" help={t("config.toolsMCPBrowserHelp")} />
+                <FT k="MCP_TIMEOUT" label="Timeout (s)" placeholder="60" />
               </div>
               <div className="divider" />
-              <FieldBool k="MCP_MYSQL_ENABLED" label="MySQL" />
+              <FB k="MCP_MYSQL_ENABLED" label="MySQL" />
               <div className="grid2">
-                <FieldText k="MCP_MYSQL_HOST" label="Host" placeholder="localhost" />
-                <FieldText k="MCP_MYSQL_USER" label="User" placeholder="root" />
-                <FieldText k="MCP_MYSQL_PASSWORD" label="Password" type="password" />
-                <FieldText k="MCP_MYSQL_DATABASE" label="Database" placeholder="mydb" />
+                <FT k="MCP_MYSQL_HOST" label="Host" placeholder="localhost" />
+                <FT k="MCP_MYSQL_USER" label="User" placeholder="root" />
+                <FT k="MCP_MYSQL_PASSWORD" label="Password" type="password" />
+                <FT k="MCP_MYSQL_DATABASE" label="Database" placeholder="mydb" />
               </div>
               <div className="divider" />
-              <FieldBool k="MCP_POSTGRES_ENABLED" label="PostgreSQL" />
-              <FieldText k="MCP_POSTGRES_URL" label="URL" placeholder="postgresql://user:pass@localhost/db" />
+              <FB k="MCP_POSTGRES_ENABLED" label="PostgreSQL" />
+              <FT k="MCP_POSTGRES_URL" label="URL" placeholder="postgresql://user:pass@localhost/db" />
             </div>
           </details>
 
@@ -6220,29 +4866,29 @@ export function App() {
           <details className="configDetails" open>
             <summary>{t("config.toolsDesktop")}</summary>
             <div className="configDetailsBody">
-              <FieldBool k="DESKTOP_ENABLED" label={t("config.toolsDesktopEnable")} help={t("config.toolsDesktopHelp")} />
+              <FB k="DESKTOP_ENABLED" label={t("config.toolsDesktopEnable")} help={t("config.toolsDesktopHelp")} />
               <div className="grid3">
-                <FieldText k="DESKTOP_DEFAULT_MONITOR" label={t("config.toolsMonitor")} placeholder="0" />
-                <FieldText k="DESKTOP_MAX_WIDTH" label={t("config.toolsMaxW")} placeholder="1920" />
-                <FieldText k="DESKTOP_MAX_HEIGHT" label={t("config.toolsMaxH")} placeholder="1080" />
+                <FT k="DESKTOP_DEFAULT_MONITOR" label={t("config.toolsMonitor")} placeholder="0" />
+                <FT k="DESKTOP_MAX_WIDTH" label={t("config.toolsMaxW")} placeholder="1920" />
+                <FT k="DESKTOP_MAX_HEIGHT" label={t("config.toolsMaxH")} placeholder="1080" />
               </div>
               <details className="configDetails">
                 <summary>{t("config.toolsDesktopAdvanced")}</summary>
                 <div className="configDetailsBody">
                   <div className="grid3">
-                    <FieldText k="DESKTOP_COMPRESSION_QUALITY" label={t("config.toolsCompression")} placeholder="85" />
-                    <FieldText k="DESKTOP_CACHE_TTL" label="Cache TTL" placeholder="1.0" />
-                    <FieldBool k="DESKTOP_FAILSAFE" label="Failsafe" />
+                    <FT k="DESKTOP_COMPRESSION_QUALITY" label={t("config.toolsCompression")} placeholder="85" />
+                    <FT k="DESKTOP_CACHE_TTL" label="Cache TTL" placeholder="1.0" />
+                    <FB k="DESKTOP_FAILSAFE" label="Failsafe" />
                   </div>
-                  <FieldBool k="DESKTOP_VISION_ENABLED" label={t("config.toolsVision")} help={t("config.toolsVisionHelp")} />
+                  <FB k="DESKTOP_VISION_ENABLED" label={t("config.toolsVision")} help={t("config.toolsVisionHelp")} />
                   <div className="grid2">
-                    <FieldText k="DESKTOP_VISION_MODEL" label={t("config.toolsVisionModel")} placeholder="qwen3-vl-plus" />
-                    <FieldText k="DESKTOP_VISION_OCR_MODEL" label="OCR" placeholder="qwen-vl-ocr" />
+                    <FT k="DESKTOP_VISION_MODEL" label={t("config.toolsVisionModel")} placeholder="qwen3-vl-plus" />
+                    <FT k="DESKTOP_VISION_OCR_MODEL" label="OCR" placeholder="qwen-vl-ocr" />
                   </div>
                   <div className="grid3">
-                    <FieldText k="DESKTOP_CLICK_DELAY" label="Click Delay" placeholder="0.1" />
-                    <FieldText k="DESKTOP_TYPE_INTERVAL" label="Type Interval" placeholder="0.03" />
-                    <FieldText k="DESKTOP_MOVE_DURATION" label="Move Duration" placeholder="0.15" />
+                    <FT k="DESKTOP_CLICK_DELAY" label="Click Delay" placeholder="0.1" />
+                    <FT k="DESKTOP_TYPE_INTERVAL" label="Type Interval" placeholder="0.03" />
+                    <FT k="DESKTOP_MOVE_DURATION" label="Move Duration" placeholder="0.15" />
                   </div>
                 </div>
               </details>
@@ -6254,27 +4900,27 @@ export function App() {
             <summary>{t("config.toolsDownloadVoice")}</summary>
             <div className="configDetailsBody">
               <div className="grid2">
-                <FieldSelect k="MODEL_DOWNLOAD_SOURCE" label={t("config.agentDownloadSource")} options={[
+                <FS k="MODEL_DOWNLOAD_SOURCE" label={t("config.agentDownloadSource")} options={[
                   { value: "auto", label: "Auto (自动选择最快源)" },
                   { value: "hf-mirror", label: "hf-mirror (国内镜像 🇨🇳)" },
                   { value: "modelscope", label: "ModelScope (魔搭社区 🇨🇳)" },
                   { value: "huggingface", label: "HuggingFace (官方)" },
                 ]} />
-                <FieldSelect k="WHISPER_LANGUAGE" label={t("config.toolsWhisperLang")} options={[
+                <FS k="WHISPER_LANGUAGE" label={t("config.toolsWhisperLang")} options={[
                   { value: "zh", label: "中文 (zh)" },
                   { value: "en", label: "English (en, .en model)" },
                   { value: "auto", label: "Auto (自动检测)" },
                 ]} />
               </div>
               <div className="grid2">
-                <FieldCombo k="WHISPER_MODEL" label={t("config.toolsWhisperModel")} help={t("config.toolsWhisperHelp")} options={[
+                <FC k="WHISPER_MODEL" label={t("config.toolsWhisperModel")} help={t("config.toolsWhisperHelp")} options={[
                   { value: "tiny", label: "tiny (~39MB)" },
                   { value: "base", label: "base (~74MB)" },
                   { value: "small", label: "small (~244MB)" },
                   { value: "medium", label: "medium (~769MB)" },
                   { value: "large", label: "large (~1.5GB)" },
                 ]} placeholder="base" />
-                <FieldText k="GITHUB_TOKEN" label="GitHub Token" placeholder="" type="password" help={t("config.toolsGithubHelp")} />
+                <FT k="GITHUB_TOKEN" label="GitHub Token" placeholder="" type="password" help={t("config.toolsGithubHelp")} />
               </div>
             </div>
           </details>
@@ -6284,13 +4930,13 @@ export function App() {
             <summary>{t("config.toolsNetwork")}</summary>
             <div className="configDetailsBody">
               <div className="grid3">
-                <FieldText k="HTTP_PROXY" label="HTTP_PROXY" placeholder="http://127.0.0.1:7890" />
-                <FieldText k="HTTPS_PROXY" label="HTTPS_PROXY" placeholder="http://127.0.0.1:7890" />
-                <FieldText k="ALL_PROXY" label="ALL_PROXY" placeholder="socks5://..." />
+                <FT k="HTTP_PROXY" label="HTTP_PROXY" placeholder="http://127.0.0.1:7890" />
+                <FT k="HTTPS_PROXY" label="HTTPS_PROXY" placeholder="http://127.0.0.1:7890" />
+                <FT k="ALL_PROXY" label="ALL_PROXY" placeholder="socks5://..." />
               </div>
               <div className="grid2">
-                <FieldBool k="FORCE_IPV4" label={t("config.toolsForceIPv4")} help={t("config.toolsForceIPv4Help")} />
-                <FieldText k="TOOL_MAX_PARALLEL" label={t("config.toolsParallel")} placeholder="1" help={t("config.toolsParallelHelp")} />
+                <FB k="FORCE_IPV4" label={t("config.toolsForceIPv4")} help={t("config.toolsForceIPv4Help")} />
+                <FT k="TOOL_MAX_PARALLEL" label={t("config.toolsParallel")} placeholder="1" help={t("config.toolsParallelHelp")} />
               </div>
             </div>
           </details>
@@ -6300,7 +4946,7 @@ export function App() {
             <summary>{t("config.toolsOther")}</summary>
             <div className="configDetailsBody">
               <div className="grid2">
-                <FieldText k="FORCE_TOOL_CALL_MAX_RETRIES" label={t("config.toolsForceRetry")} placeholder="1" />
+                <FT k="FORCE_TOOL_CALL_MAX_RETRIES" label={t("config.toolsForceRetry")} placeholder="1" />
               </div>
             </div>
           </details>
@@ -6388,311 +5034,10 @@ export function App() {
     );
   }
 
-  // ── CLI 命令行工具管理组件 ──
-  function CliManager() {
-    const [cliStatus, setCliStatus] = useState<{
-      registeredCommands: string[];
-      inPath: boolean;
-      binDir: string;
-    } | null>(null);
-    const [cliLoading, setCliLoading] = useState(false);
-    const [cliMsg, setCliMsg] = useState("");
-    const [cliRegOpenakita, setCliRegOpenakita] = useState(true);
-    const [cliRegOa, setCliRegOa] = useState(true);
-    const [cliRegPath, setCliRegPath] = useState(true);
-
-    useEffect(() => {
-      loadCliStatus();
-    }, []);
-
-    async function loadCliStatus() {
-      try {
-        const status = await invoke<{ registeredCommands: string[]; inPath: boolean; binDir: string }>("get_cli_status");
-        setCliStatus(status);
-        setCliRegOpenakita(status.registeredCommands.includes("openakita"));
-        setCliRegOa(status.registeredCommands.includes("oa"));
-        setCliRegPath(status.inPath);
-      } catch (e) {
-        setCliMsg(`查询 CLI 状态失败: ${String(e)}`);
-      }
-    }
-
-    async function doRegister() {
-      const cmds: string[] = [];
-      if (cliRegOpenakita) cmds.push("openakita");
-      if (cliRegOa) cmds.push("oa");
-      if (cmds.length === 0) {
-        setCliMsg("请至少选择一个命令名称");
-        return;
-      }
-      setCliLoading(true);
-      setCliMsg("");
-      try {
-        const result = await invoke<string>("register_cli", { commands: cmds, addToPath: cliRegPath });
-        setCliMsg(`✓ ${result}`);
-        await loadCliStatus();
-      } catch (e) {
-        setCliMsg(`✗ 注册失败: ${String(e)}`);
-      } finally {
-        setCliLoading(false);
-      }
-    }
-
-    async function doUnregister() {
-      setCliLoading(true);
-      setCliMsg("");
-      try {
-        const result = await invoke<string>("unregister_cli");
-        setCliMsg(`✓ ${result}`);
-        await loadCliStatus();
-      } catch (e) {
-        setCliMsg(`✗ 注销失败: ${String(e)}`);
-      } finally {
-        setCliLoading(false);
-      }
-    }
-
-    const hasRegistered = cliStatus && cliStatus.registeredCommands.length > 0;
-
-    return (
-      <div style={{ padding: "0 0 8px" }}>
-        {cliStatus && hasRegistered && (
-          <div style={{ background: "rgba(34,197,94,0.08)", borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
-            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>已注册命令</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 13 }}>
-              {cliStatus.registeredCommands.map(cmd => (
-                <code key={cmd} style={{ padding: "2px 8px", background: "rgba(0,0,0,0.08)", borderRadius: 4, fontSize: 12 }}>{cmd}</code>
-              ))}
-              {cliStatus.inPath ? (
-                <span style={{ color: "#22c55e", fontSize: 12 }}>(已在 PATH 中)</span>
-              ) : (
-                <span style={{ color: "#f59e0b", fontSize: 12 }}>(未在 PATH 中)</span>
-              )}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>目录: {cliStatus.binDir}</div>
-          </div>
-        )}
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
-            <input type="checkbox" checked={cliRegOpenakita} onChange={() => setCliRegOpenakita(!cliRegOpenakita)} />
-            <span><strong>openakita</strong> — 完整命令</span>
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
-            <input type="checkbox" checked={cliRegOa} onChange={() => setCliRegOa(!cliRegOa)} />
-            <span><strong>oa</strong> — 简短别名</span>
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
-            <input type="checkbox" checked={cliRegPath} onChange={() => setCliRegPath(!cliRegPath)} />
-            <span>添加到系统 PATH</span>
-          </label>
-        </div>
-
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btnPrimary" onClick={doRegister} disabled={cliLoading} style={{ fontSize: 13 }}>
-            {cliLoading ? "处理中..." : hasRegistered ? "更新注册" : "注册"}
-          </button>
-          {hasRegistered && (
-            <button onClick={doUnregister} disabled={cliLoading} style={{ fontSize: 13 }}>
-              注销全部
-            </button>
-          )}
-        </div>
-
-        {cliMsg && (
-          <div style={{
-            marginTop: 8, padding: "6px 10px", borderRadius: 6, fontSize: 12,
-            background: cliMsg.startsWith("✓") ? "rgba(34,197,94,0.1)" : cliMsg.startsWith("✗") ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.1)",
-            color: cliMsg.startsWith("✓") ? "#22c55e" : cliMsg.startsWith("✗") ? "#ef4444" : "#f59e0b",
-          }}>
-            {cliMsg}
-          </div>
-        )}
-      </div>
-    );
-  }
+  // CliManager -> ./components/CliManager.tsx
 
   function renderAgentSystem() {
-    const keysAgent = [
-      "AGENT_NAME", "MAX_ITERATIONS", "AUTO_CONFIRM", "SELFCHECK_AUTOFIX",
-      "THINKING_MODE",
-      "PROGRESS_TIMEOUT_SECONDS", "HARD_TIMEOUT_SECONDS",
-      "DATABASE_PATH", "LOG_LEVEL", "LOG_DIR", "LOG_FILE_PREFIX",
-      "LOG_MAX_SIZE_MB", "LOG_BACKUP_COUNT", "LOG_RETENTION_DAYS",
-      "LOG_FORMAT", "LOG_TO_CONSOLE", "LOG_TO_FILE",
-      "EMBEDDING_MODEL", "EMBEDDING_DEVICE", "MODEL_DOWNLOAD_SOURCE",
-      "MEMORY_HISTORY_DAYS", "MEMORY_MAX_HISTORY_FILES", "MEMORY_MAX_HISTORY_SIZE_MB",
-      "PERSONA_NAME",
-      "PROACTIVE_ENABLED", "PROACTIVE_MAX_DAILY_MESSAGES", "PROACTIVE_MIN_INTERVAL_MINUTES",
-      "PROACTIVE_QUIET_HOURS_START", "PROACTIVE_QUIET_HOURS_END", "PROACTIVE_IDLE_THRESHOLD_HOURS",
-      "STICKER_ENABLED", "STICKER_DATA_DIR",
-      "DESKTOP_NOTIFY_ENABLED", "DESKTOP_NOTIFY_SOUND",
-      "SCHEDULER_ENABLED", "SCHEDULER_TIMEZONE", "SCHEDULER_MAX_CONCURRENT", "SCHEDULER_TASK_TIMEOUT",
-      "SESSION_TIMEOUT_MINUTES", "SESSION_MAX_HISTORY", "SESSION_STORAGE_PATH",
-    ];
-
-    const personas = [
-      { id: "default", zh: "\u9ed8\u8ba4\u52a9\u624b", en: "Default", desc: "config.agentPersonaDefault" },
-      { id: "business", zh: "\u5546\u52a1\u987e\u95ee", en: "Business", desc: "config.agentPersonaBusiness" },
-      { id: "tech_expert", zh: "\u6280\u672f\u4e13\u5bb6", en: "Tech Expert", desc: "config.agentPersonaTech" },
-      { id: "butler", zh: "\u79c1\u4eba\u7ba1\u5bb6", en: "Butler", desc: "config.agentPersonaButler" },
-      { id: "girlfriend", zh: "\u865a\u62df\u5973\u53cb", en: "Girlfriend", desc: "config.agentPersonaGirlfriend" },
-      { id: "boyfriend", zh: "\u865a\u62df\u7537\u53cb", en: "Boyfriend", desc: "config.agentPersonaBoyfriend" },
-      { id: "family", zh: "\u5bb6\u4eba", en: "Family", desc: "config.agentPersonaFamily" },
-      { id: "jarvis", zh: "\u8d3e\u7ef4\u65af", en: "Jarvis", desc: "config.agentPersonaJarvis" },
-    ];
-    const curPersona = envGet(envDraft, "PERSONA_NAME", "default");
-
-    return (
-      <>
-        <div className="card">
-          <div className="cardTitle">{t("config.agentTitle")}</div>
-          <div className="cardHint">{t("config.agentHint")}</div>
-          <div className="divider" />
-
-          {/* ── Persona Selection ── */}
-          <div style={{ marginBottom: 12 }}>
-            <div className="label">{t("config.agentPersona")}</div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
-              {personas.map((p) => (
-                <button key={p.id}
-                  className={curPersona === p.id ? "capChipActive" : "capChip"}
-                  onClick={() => setEnvDraft((m) => envSet(m, "PERSONA_NAME", p.id))}>
-                  {t(p.desc)}
-                </button>
-              ))}
-            </div>
-            {curPersona === "custom" || !personas.find((p) => p.id === curPersona) ? (
-              <input style={{ marginTop: 8, maxWidth: 300 }} type="text" placeholder={t("config.agentCustomId")}
-                value={envGet(envDraft, "PERSONA_CUSTOM_ID", "")}
-                onChange={(e) => {
-                  setEnvDraft((m) => envSet(m, "PERSONA_CUSTOM_ID", e.target.value));
-                  setEnvDraft((m) => envSet(m, "PERSONA_NAME", e.target.value || "custom"));
-                }} />
-            ) : null}
-          </div>
-
-          {/* ── Core Parameters ── */}
-          <div className="label">{t("config.agentCore")}</div>
-          <div className="grid3" style={{ marginTop: 4 }}>
-            <FieldText k="AGENT_NAME" label={t("config.agentName")} placeholder="OpenAkita" />
-            <FieldText k="MAX_ITERATIONS" label={t("config.agentMaxIter")} placeholder="300" help={t("config.agentMaxIterHelp")} />
-            <FieldSelect k="THINKING_MODE" label={t("config.agentThinking")} options={[
-              { value: "auto", label: "auto (自动判断)" },
-              { value: "always", label: "always (始终思考)" },
-              { value: "never", label: "never (从不思考)" },
-            ]} />
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <FieldBool k="AUTO_CONFIRM" label={t("config.agentAutoConfirm")} help={t("config.agentAutoConfirmHelp")} />
-          </div>
-
-          <div className="divider" />
-
-          {/* ── Living Presence ── */}
-          <div className="label">{t("config.agentProactive")}</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
-            <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
-              <FieldBool k="PROACTIVE_ENABLED" label={t("config.agentProactiveEnable")} help={t("config.agentProactiveEnableHelp")} />
-              <FieldBool k="STICKER_ENABLED" label={t("config.agentSticker")} help={t("config.agentStickerHelp")} />
-            </div>
-            <div className="grid3">
-              <FieldText k="PROACTIVE_MAX_DAILY_MESSAGES" label={t("config.agentMaxDaily")} placeholder="3" help={t("config.agentMaxDailyHelp")} />
-              <FieldText k="PROACTIVE_QUIET_HOURS_START" label={t("config.agentQuietStart")} placeholder="23" help={t("config.agentQuietStartHelp")} />
-              <FieldText k="PROACTIVE_QUIET_HOURS_END" label={t("config.agentQuietEnd")} placeholder="7" />
-            </div>
-          </div>
-
-          <div className="divider" />
-
-          {/* ── Desktop Notification ── */}
-          <div className="label">{t("config.agentDesktopNotify")}</div>
-          <div className="row" style={{ gap: 16, flexWrap: "wrap", marginTop: 4 }}>
-            <FieldBool k="DESKTOP_NOTIFY_ENABLED" label={t("config.agentDesktopNotifyEnable")} help={t("config.agentDesktopNotifyEnableHelp")} />
-            <FieldBool k="DESKTOP_NOTIFY_SOUND" label={t("config.agentDesktopNotifySound")} help={t("config.agentDesktopNotifySoundHelp")} />
-          </div>
-
-          <div className="divider" />
-
-          {/* ── Scheduler ── */}
-          <div className="label">{t("config.agentScheduler")}</div>
-          <div className="grid3" style={{ marginTop: 4 }}>
-            <FieldBool k="SCHEDULER_ENABLED" label={t("config.agentSchedulerEnable")} help={t("config.agentSchedulerEnableHelp")} defaultValue={true} />
-            <FieldText k="SCHEDULER_TIMEZONE" label={t("config.agentTimezone")} placeholder="Asia/Shanghai" />
-            <FieldText k="SCHEDULER_MAX_CONCURRENT" label={t("config.agentMaxConcurrent")} placeholder="5" help={t("config.agentMaxConcurrentHelp")} />
-          </div>
-
-          <div className="divider" />
-
-          {/* ── Advanced (collapsed) ── */}
-          <details className="configDetails">
-            <summary>{t("config.agentAdvanced")}</summary>
-            <div className="configDetailsBody">
-              {/* Logging */}
-              <div className="label" style={{ fontSize: 13, opacity: 0.7 }}>{t("config.agentLogSection")}</div>
-              <div className="grid3">
-                <FieldSelect k="LOG_LEVEL" label={t("config.agentLogLevel")} options={[
-                  { value: "DEBUG", label: "DEBUG" },
-                  { value: "INFO", label: "INFO" },
-                  { value: "WARNING", label: "WARNING" },
-                  { value: "ERROR", label: "ERROR" },
-                ]} />
-                <FieldText k="LOG_DIR" label={t("config.agentLogDir")} placeholder="logs" />
-                <FieldText k="DATABASE_PATH" label={t("config.agentDbPath")} placeholder="data/agent.db" />
-              </div>
-              <div className="grid3">
-                <FieldText k="LOG_MAX_SIZE_MB" label={t("config.agentLogMaxMB")} placeholder="10" />
-                <FieldText k="LOG_BACKUP_COUNT" label={t("config.agentLogBackup")} placeholder="30" />
-                <FieldText k="LOG_RETENTION_DAYS" label={t("config.agentLogRetention")} placeholder="30" />
-              </div>
-              <div className="grid2">
-                <FieldBool k="LOG_TO_CONSOLE" label={t("config.agentLogConsole")} />
-                <FieldBool k="LOG_TO_FILE" label={t("config.agentLogFile")} />
-              </div>
-
-              <div className="divider" />
-              {/* Memory & Embedding */}
-              <div className="label" style={{ fontSize: 13, opacity: 0.7 }}>{t("config.agentMemorySection")}</div>
-              <div className="grid3">
-                <FieldText k="EMBEDDING_MODEL" label={t("config.agentEmbedModel")} placeholder="shibing624/text2vec-base-chinese" />
-                <FieldText k="EMBEDDING_DEVICE" label={t("config.agentEmbedDevice")} placeholder="cpu" />
-                <FieldSelect k="MODEL_DOWNLOAD_SOURCE" label={t("config.agentDownloadSource")} options={[
-                  { value: "auto", label: "Auto (自动选择)" },
-                  { value: "hf-mirror", label: "hf-mirror (国内镜像)" },
-                  { value: "modelscope", label: "ModelScope (魔搭)" },
-                  { value: "huggingface", label: "HuggingFace (官方)" },
-                ]} />
-              </div>
-              <div className="grid3">
-                <FieldText k="MEMORY_HISTORY_DAYS" label={t("config.agentMemDays")} placeholder="30" />
-                <FieldText k="MEMORY_MAX_HISTORY_FILES" label={t("config.agentMemFiles")} placeholder="1000" />
-                <FieldText k="MEMORY_MAX_HISTORY_SIZE_MB" label={t("config.agentMemSize")} placeholder="500" />
-              </div>
-
-              <div className="divider" />
-              {/* Session */}
-              <div className="label" style={{ fontSize: 13, opacity: 0.7 }}>{t("config.agentSessionSection")}</div>
-              <div className="grid3">
-                <FieldText k="SESSION_TIMEOUT_MINUTES" label={t("config.agentSessionTimeout")} placeholder="30" />
-                <FieldText k="SESSION_MAX_HISTORY" label={t("config.agentSessionMax")} placeholder="50" />
-                <FieldText k="SESSION_STORAGE_PATH" label={t("config.agentSessionPath")} placeholder="data/sessions" />
-              </div>
-
-              <div className="divider" />
-              {/* Proactive advanced */}
-              <div className="label" style={{ fontSize: 13, opacity: 0.7 }}>{t("config.agentProactiveAdv")}</div>
-              <div className="grid2">
-                <FieldText k="PROACTIVE_MIN_INTERVAL_MINUTES" label={t("config.agentMinInterval")} placeholder="120" />
-                <FieldText k="PROACTIVE_IDLE_THRESHOLD_HOURS" label={t("config.agentIdleThreshold")} placeholder="24" />
-                <FieldText k="STICKER_DATA_DIR" label={t("config.agentStickerDir")} placeholder="data/sticker" />
-              </div>
-
-            </div>
-          </details>
-
-        </div>
-      </>
-    );
+    return <AgentSystemView {..._configViewProps} />;
   }
 
   function renderAdvanced() {
@@ -7301,14 +5646,14 @@ export function App() {
               网络代理与并行
             </div>
             <div className="grid3">
-              <FieldText k="HTTP_PROXY" label="HTTP_PROXY" placeholder="http://127.0.0.1:7890" />
-              <FieldText k="HTTPS_PROXY" label="HTTPS_PROXY" placeholder="http://127.0.0.1:7890" />
-              <FieldText k="ALL_PROXY" label="ALL_PROXY" placeholder="socks5://127.0.0.1:1080" />
+              <FT k="HTTP_PROXY" label="HTTP_PROXY" placeholder="http://127.0.0.1:7890" />
+              <FT k="HTTPS_PROXY" label="HTTPS_PROXY" placeholder="http://127.0.0.1:7890" />
+              <FT k="ALL_PROXY" label="ALL_PROXY" placeholder="socks5://127.0.0.1:1080" />
             </div>
             <div className="grid3" style={{ marginTop: 10 }}>
-              <FieldBool k="FORCE_IPV4" label="强制 IPv4" help="某些 VPN/IPv6 环境下有用" />
-              <FieldText k="TOOL_MAX_PARALLEL" label="TOOL_MAX_PARALLEL" placeholder="1" help="单轮多工具并行数（默认 1=串行）" />
-              <FieldText k="LOG_LEVEL" label="LOG_LEVEL" placeholder="INFO" help="DEBUG/INFO/WARNING/ERROR" />
+              <FB k="FORCE_IPV4" label="强制 IPv4" help="某些 VPN/IPv6 环境下有用" />
+              <FT k="TOOL_MAX_PARALLEL" label="TOOL_MAX_PARALLEL" placeholder="1" help="单轮多工具并行数（默认 1=串行）" />
+              <FT k="LOG_LEVEL" label="LOG_LEVEL" placeholder="INFO" help="DEBUG/INFO/WARNING/ERROR" />
             </div>
           </div>
 
@@ -7328,12 +5673,12 @@ export function App() {
                 apply: "https://t.me/BotFather",
                 body: (
                   <>
-                    <FieldText k="TELEGRAM_BOT_TOKEN" label="Bot Token" placeholder="从 BotFather 获取（仅会显示一次）" type="password" />
-                    <FieldText k="TELEGRAM_PROXY" label="代理（可选）" placeholder="http://127.0.0.1:7890 / socks5://..." />
-                    <FieldBool k="TELEGRAM_REQUIRE_PAIRING" label={t("config.imPairing")} />
-                    <FieldText k="TELEGRAM_PAIRING_CODE" label={t("config.imPairingCode")} placeholder={t("config.imPairingCodeHint")} />
-                    <TelegramPairingCodeHint />
-                    <FieldText k="TELEGRAM_WEBHOOK_URL" label="Webhook URL" placeholder="https://..." />
+                    <FT k="TELEGRAM_BOT_TOKEN" label="Bot Token" placeholder="从 BotFather 获取（仅会显示一次）" type="password" />
+                    <FT k="TELEGRAM_PROXY" label="代理（可选）" placeholder="http://127.0.0.1:7890 / socks5://..." />
+                    <FB k="TELEGRAM_REQUIRE_PAIRING" label={t("config.imPairing")} />
+                    <FT k="TELEGRAM_PAIRING_CODE" label={t("config.imPairingCode")} placeholder={t("config.imPairingCodeHint")} />
+                    <TelegramPairingCodeHint currentWorkspaceId={currentWorkspaceId} />
+                    <FT k="TELEGRAM_WEBHOOK_URL" label="Webhook URL" placeholder="https://..." />
                   </>
                 ),
               },
@@ -7343,8 +5688,8 @@ export function App() {
                 apply: "https://open.feishu.cn/",
                 body: (
                   <>
-                    <FieldText k="FEISHU_APP_ID" label="App ID" placeholder="" />
-                    <FieldText k="FEISHU_APP_SECRET" label="App Secret" placeholder="" type="password" />
+                    <FT k="FEISHU_APP_ID" label="App ID" placeholder="" />
+                    <FT k="FEISHU_APP_SECRET" label="App Secret" placeholder="" type="password" />
                   </>
                 ),
               },
@@ -7354,10 +5699,10 @@ export function App() {
                 apply: "https://work.weixin.qq.com/",
                 body: (
                   <>
-                    <FieldText k="WEWORK_CORP_ID" label="Corp ID" />
-                    <FieldText k="WEWORK_TOKEN" label="回调 Token" placeholder="在企业微信后台「接收消息」设置中获取" />
-                    <FieldText k="WEWORK_ENCODING_AES_KEY" label="EncodingAESKey" placeholder="在企业微信后台「接收消息」设置中获取" type="password" />
-                    <FieldText k="WEWORK_CALLBACK_PORT" label="回调端口" placeholder="9880" />
+                    <FT k="WEWORK_CORP_ID" label="Corp ID" />
+                    <FT k="WEWORK_TOKEN" label="回调 Token" placeholder="在企业微信后台「接收消息」设置中获取" />
+                    <FT k="WEWORK_ENCODING_AES_KEY" label="EncodingAESKey" placeholder="在企业微信后台「接收消息」设置中获取" type="password" />
+                    <FT k="WEWORK_CALLBACK_PORT" label="回调端口" placeholder="9880" />
                     <div style={{ fontSize: 12, color: "var(--muted)", margin: "4px 0 0 0", lineHeight: 1.6 }}>
                       💡 企业微信后台「接收消息服务器配置」的 URL 请填：<code style={{ background: "#f5f5f5", padding: "1px 5px", borderRadius: 4, fontSize: 11 }}>http://your-domain:9880/callback</code>
                     </div>
@@ -7370,8 +5715,8 @@ export function App() {
                 apply: "https://open.dingtalk.com/",
                 body: (
                   <>
-                    <FieldText k="DINGTALK_CLIENT_ID" label="Client ID" />
-                    <FieldText k="DINGTALK_CLIENT_SECRET" label="Client Secret" type="password" />
+                    <FT k="DINGTALK_CLIENT_ID" label="Client ID" />
+                    <FT k="DINGTALK_CLIENT_SECRET" label="Client Secret" type="password" />
                   </>
                 ),
               },
@@ -7381,9 +5726,9 @@ export function App() {
                 apply: "https://bot.q.qq.com/wiki/develop/api-v2/",
                 body: (
                   <>
-                    <FieldText k="QQBOT_APP_ID" label="AppID" placeholder="q.qq.com 开发设置" />
-                    <FieldText k="QQBOT_APP_SECRET" label="AppSecret" type="password" placeholder="q.qq.com 开发设置" />
-                    <FieldBool k="QQBOT_SANDBOX" label={t("config.imQQBotSandbox")} />
+                    <FT k="QQBOT_APP_ID" label="AppID" placeholder="q.qq.com 开发设置" />
+                    <FT k="QQBOT_APP_SECRET" label="AppSecret" type="password" placeholder="q.qq.com 开发设置" />
+                    <FB k="QQBOT_SANDBOX" label={t("config.imQQBotSandbox")} />
                     <div style={{ marginTop: 8 }}>
                       <div className="label">{t("config.imQQBotMode")}</div>
                       <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
@@ -7400,8 +5745,8 @@ export function App() {
                     </div>
                     {(envDraft["QQBOT_MODE"] === "webhook") && (
                       <>
-                        <FieldText k="QQBOT_WEBHOOK_PORT" label={t("config.imQQBotWebhookPort")} placeholder="9890" />
-                        <FieldText k="QQBOT_WEBHOOK_PATH" label={t("config.imQQBotWebhookPath")} placeholder="/qqbot/callback" />
+                        <FT k="QQBOT_WEBHOOK_PORT" label={t("config.imQQBotWebhookPort")} placeholder="9890" />
+                        <FT k="QQBOT_WEBHOOK_PATH" label={t("config.imQQBotWebhookPath")} placeholder="/qqbot/callback" />
                       </>
                     )}
                   </>
@@ -7413,8 +5758,8 @@ export function App() {
                 apply: "https://github.com/botuniverse/onebot-11",
                 body: (
                   <>
-                    <FieldText k="ONEBOT_WS_URL" label="WebSocket URL" placeholder="ws://127.0.0.1:8080" />
-                    <FieldText k="ONEBOT_ACCESS_TOKEN" label="Access Token" type="password" placeholder={t("config.imOneBotTokenHint")} />
+                    <FT k="ONEBOT_WS_URL" label="WebSocket URL" placeholder="ws://127.0.0.1:8080" />
+                    <FT k="ONEBOT_ACCESS_TOKEN" label="Access Token" type="password" placeholder={t("config.imOneBotTokenHint")} />
                   </>
                 ),
               },
@@ -7463,70 +5808,70 @@ export function App() {
                 <div className="label" style={{ marginBottom: 8 }}>
                   MCP
                 </div>
-                <FieldBool k="MCP_ENABLED" label="启用 MCP" help="连接外部 MCP 服务/工具" />
+                <FB k="MCP_ENABLED" label="启用 MCP" help="连接外部 MCP 服务/工具" />
                 <div className="grid2" style={{ marginTop: 10 }}>
-                  <FieldBool k="MCP_BROWSER_ENABLED" label="Browser MCP" help="Playwright 浏览器自动化" />
-                  <FieldText k="MCP_TIMEOUT" label="MCP_TIMEOUT" placeholder="60" />
+                  <FB k="MCP_BROWSER_ENABLED" label="Browser MCP" help="Playwright 浏览器自动化" />
+                  <FT k="MCP_TIMEOUT" label="MCP_TIMEOUT" placeholder="60" />
                 </div>
                 <div className="divider" />
-                <FieldBool k="MCP_MYSQL_ENABLED" label="MySQL MCP" />
+                <FB k="MCP_MYSQL_ENABLED" label="MySQL MCP" />
                 <div className="grid2" style={{ marginTop: 10 }}>
-                  <FieldText k="MCP_MYSQL_HOST" label="MCP_MYSQL_HOST" placeholder="localhost" />
-                  <FieldText k="MCP_MYSQL_USER" label="MCP_MYSQL_USER" placeholder="root" />
-                  <FieldText k="MCP_MYSQL_PASSWORD" label="MCP_MYSQL_PASSWORD" type="password" />
-                  <FieldText k="MCP_MYSQL_DATABASE" label="MCP_MYSQL_DATABASE" placeholder="mydb" />
+                  <FT k="MCP_MYSQL_HOST" label="MCP_MYSQL_HOST" placeholder="localhost" />
+                  <FT k="MCP_MYSQL_USER" label="MCP_MYSQL_USER" placeholder="root" />
+                  <FT k="MCP_MYSQL_PASSWORD" label="MCP_MYSQL_PASSWORD" type="password" />
+                  <FT k="MCP_MYSQL_DATABASE" label="MCP_MYSQL_DATABASE" placeholder="mydb" />
                 </div>
                 <div className="divider" />
-                <FieldBool k="MCP_POSTGRES_ENABLED" label="Postgres MCP" />
-                <FieldText k="MCP_POSTGRES_URL" label="MCP_POSTGRES_URL" placeholder="postgresql://user:pass@localhost/db" />
+                <FB k="MCP_POSTGRES_ENABLED" label="Postgres MCP" />
+                <FT k="MCP_POSTGRES_URL" label="MCP_POSTGRES_URL" placeholder="postgresql://user:pass@localhost/db" />
               </div>
 
               <div className="card" style={{ marginTop: 0 }}>
                 <div className="label" style={{ marginBottom: 8 }}>
                   桌面自动化（Windows）
                 </div>
-                <FieldBool k="DESKTOP_ENABLED" label="启用桌面工具" help="启用/禁用桌面自动化工具集" />
+                <FB k="DESKTOP_ENABLED" label="启用桌面工具" help="启用/禁用桌面自动化工具集" />
                 <div className="divider" />
                 <div className="grid3">
-                  <FieldText k="DESKTOP_DEFAULT_MONITOR" label="默认显示器" placeholder="0" />
-                  <FieldText k="DESKTOP_MAX_WIDTH" label="最大宽" placeholder="1920" />
-                  <FieldText k="DESKTOP_MAX_HEIGHT" label="最大高" placeholder="1080" />
+                  <FT k="DESKTOP_DEFAULT_MONITOR" label="默认显示器" placeholder="0" />
+                  <FT k="DESKTOP_MAX_WIDTH" label="最大宽" placeholder="1920" />
+                  <FT k="DESKTOP_MAX_HEIGHT" label="最大高" placeholder="1080" />
                 </div>
                 <div className="grid3" style={{ marginTop: 10 }}>
-                  <FieldText k="DESKTOP_COMPRESSION_QUALITY" label="压缩质量" placeholder="85" />
-                  <FieldText k="DESKTOP_CACHE_TTL" label="截图缓存秒" placeholder="1.0" />
-                  <FieldBool k="DESKTOP_FAILSAFE" label="failsafe" help="鼠标移到角落中止（PyAutoGUI 风格）" />
+                  <FT k="DESKTOP_COMPRESSION_QUALITY" label="压缩质量" placeholder="85" />
+                  <FT k="DESKTOP_CACHE_TTL" label="截图缓存秒" placeholder="1.0" />
+                  <FB k="DESKTOP_FAILSAFE" label="failsafe" help="鼠标移到角落中止（PyAutoGUI 风格）" />
                 </div>
                 <div className="divider" />
-                <FieldBool k="DESKTOP_VISION_ENABLED" label="启用视觉" help="用于屏幕理解/定位" />
+                <FB k="DESKTOP_VISION_ENABLED" label="启用视觉" help="用于屏幕理解/定位" />
                 <div className="grid2" style={{ marginTop: 10 }}>
-                  <FieldText k="DESKTOP_VISION_MODEL" label="视觉模型" placeholder="qwen3-vl-plus" />
-                  <FieldText k="DESKTOP_VISION_OCR_MODEL" label="OCR 模型" placeholder="qwen-vl-ocr" />
+                  <FT k="DESKTOP_VISION_MODEL" label="视觉模型" placeholder="qwen3-vl-plus" />
+                  <FT k="DESKTOP_VISION_OCR_MODEL" label="OCR 模型" placeholder="qwen-vl-ocr" />
                 </div>
                 <div className="grid3" style={{ marginTop: 10 }}>
-                  <FieldText k="DESKTOP_CLICK_DELAY" label="click_delay" placeholder="0.1" />
-                  <FieldText k="DESKTOP_TYPE_INTERVAL" label="type_interval" placeholder="0.03" />
-                  <FieldText k="DESKTOP_MOVE_DURATION" label="move_duration" placeholder="0.15" />
+                  <FT k="DESKTOP_CLICK_DELAY" label="click_delay" placeholder="0.1" />
+                  <FT k="DESKTOP_TYPE_INTERVAL" label="type_interval" placeholder="0.03" />
+                  <FT k="DESKTOP_MOVE_DURATION" label="move_duration" placeholder="0.15" />
                 </div>
               </div>
             </div>
 
             <div className="divider" />
             <div className="grid3">
-              <FieldCombo k="WHISPER_MODEL" label="WHISPER_MODEL" help="tiny/base/small/medium/large" options={[
+              <FC k="WHISPER_MODEL" label="WHISPER_MODEL" help="tiny/base/small/medium/large" options={[
                 { value: "tiny", label: "tiny (~39MB)" },
                 { value: "base", label: "base (~74MB)" },
                 { value: "small", label: "small (~244MB)" },
                 { value: "medium", label: "medium (~769MB)" },
                 { value: "large", label: "large (~1.5GB)" },
               ]} placeholder="base" />
-              <FieldSelect k="WHISPER_LANGUAGE" label="WHISPER_LANGUAGE" options={[
+              <FS k="WHISPER_LANGUAGE" label="WHISPER_LANGUAGE" options={[
                 { value: "zh", label: "中文 (zh)" },
                 { value: "en", label: "English (en)" },
                 { value: "auto", label: "Auto (自动检测)" },
               ]} />
-              <FieldText k="GITHUB_TOKEN" label="GITHUB_TOKEN" placeholder="" type="password" help="用于搜索/下载技能" />
-              <FieldText k="DATABASE_PATH" label="DATABASE_PATH" placeholder="data/agent.db" />
+              <FT k="GITHUB_TOKEN" label="GITHUB_TOKEN" placeholder="" type="password" help="用于搜索/下载技能" />
+              <FT k="DATABASE_PATH" label="DATABASE_PATH" placeholder="data/agent.db" />
             </div>
           </div>
 
@@ -7542,16 +5887,16 @@ export function App() {
             <details open>
               <summary style={{ cursor: "pointer", fontWeight: 800, padding: "8px 0" }}>基础</summary>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                <FieldText k="AGENT_NAME" label="Agent 名称" placeholder="OpenAkita" />
-                <FieldText k="MAX_ITERATIONS" label="最大迭代次数" placeholder="300" />
-                <FieldBool k="AUTO_CONFIRM" label="自动确认（慎用）" help="打开后会减少交互确认，建议只在可信环境中使用" />
-                <FieldSelect k="THINKING_MODE" label="Thinking 模式" options={[
+                <FT k="AGENT_NAME" label="Agent 名称" placeholder="OpenAkita" />
+                <FT k="MAX_ITERATIONS" label="最大迭代次数" placeholder="300" />
+                <FB k="AUTO_CONFIRM" label="自动确认（慎用）" help="打开后会减少交互确认，建议只在可信环境中使用" />
+                <FS k="THINKING_MODE" label="Thinking 模式" options={[
                   { value: "auto", label: "auto (自动判断)" },
                   { value: "always", label: "always (始终思考)" },
                   { value: "never", label: "never (从不思考)" },
                 ]} />
-                <FieldText k="DATABASE_PATH" label="数据库路径" placeholder="data/agent.db" />
-                <FieldSelect k="LOG_LEVEL" label="日志级别" options={[
+                <FT k="DATABASE_PATH" label="数据库路径" placeholder="data/agent.db" />
+                <FS k="LOG_LEVEL" label="日志级别" options={[
                   { value: "DEBUG", label: "DEBUG" },
                   { value: "INFO", label: "INFO" },
                   { value: "WARNING", label: "WARNING" },
@@ -7564,14 +5909,14 @@ export function App() {
             <details>
               <summary style={{ cursor: "pointer", fontWeight: 800, padding: "8px 0" }}>日志高级</summary>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                <FieldText k="LOG_DIR" label="日志目录" placeholder="logs" />
-                <FieldText k="LOG_FILE_PREFIX" label="日志文件前缀" placeholder="openakita" />
-                <FieldText k="LOG_MAX_SIZE_MB" label="单文件最大 MB" placeholder="10" />
-                <FieldText k="LOG_BACKUP_COUNT" label="备份文件数" placeholder="30" />
-                <FieldText k="LOG_RETENTION_DAYS" label="保留天数" placeholder="30" />
-                <FieldText k="LOG_FORMAT" label="日志格式" placeholder="%(asctime)s - %(name)s - %(levelname)s - %(message)s" />
-                <FieldBool k="LOG_TO_CONSOLE" label="输出到控制台" help="默认 true" />
-                <FieldBool k="LOG_TO_FILE" label="输出到文件" help="默认 true" />
+                <FT k="LOG_DIR" label="日志目录" placeholder="logs" />
+                <FT k="LOG_FILE_PREFIX" label="日志文件前缀" placeholder="openakita" />
+                <FT k="LOG_MAX_SIZE_MB" label="单文件最大 MB" placeholder="10" />
+                <FT k="LOG_BACKUP_COUNT" label="备份文件数" placeholder="30" />
+                <FT k="LOG_RETENTION_DAYS" label="保留天数" placeholder="30" />
+                <FT k="LOG_FORMAT" label="日志格式" placeholder="%(asctime)s - %(name)s - %(levelname)s - %(message)s" />
+                <FB k="LOG_TO_CONSOLE" label="输出到控制台" help="默认 true" />
+                <FB k="LOG_TO_FILE" label="输出到文件" help="默认 true" />
               </div>
             </details>
 
@@ -7579,17 +5924,17 @@ export function App() {
             <details>
               <summary style={{ cursor: "pointer", fontWeight: 800, padding: "8px 0" }}>记忆与 Embedding</summary>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                <FieldText k="EMBEDDING_MODEL" label="Embedding 模型" placeholder="shibing624/text2vec-base-chinese" />
-                <FieldText k="EMBEDDING_DEVICE" label="Embedding 设备" placeholder="cpu / cuda" />
-                <FieldSelect k="MODEL_DOWNLOAD_SOURCE" label="模型下载源" options={[
+                <FT k="EMBEDDING_MODEL" label="Embedding 模型" placeholder="shibing624/text2vec-base-chinese" />
+                <FT k="EMBEDDING_DEVICE" label="Embedding 设备" placeholder="cpu / cuda" />
+                <FS k="MODEL_DOWNLOAD_SOURCE" label="模型下载源" options={[
                   { value: "auto", label: "Auto (自动选择)" },
                   { value: "hf-mirror", label: "hf-mirror (国内镜像)" },
                   { value: "modelscope", label: "ModelScope (魔搭)" },
                   { value: "huggingface", label: "HuggingFace (官方)" },
                 ]} />
-                <FieldText k="MEMORY_HISTORY_DAYS" label="历史保留天数" placeholder="30" />
-                <FieldText k="MEMORY_MAX_HISTORY_FILES" label="最大历史文件数" placeholder="1000" />
-                <FieldText k="MEMORY_MAX_HISTORY_SIZE_MB" label="最大历史大小（MB）" placeholder="500" />
+                <FT k="MEMORY_HISTORY_DAYS" label="历史保留天数" placeholder="30" />
+                <FT k="MEMORY_MAX_HISTORY_FILES" label="最大历史文件数" placeholder="1000" />
+                <FT k="MEMORY_MAX_HISTORY_SIZE_MB" label="最大历史大小（MB）" placeholder="500" />
               </div>
             </details>
 
@@ -7597,9 +5942,9 @@ export function App() {
             <details>
               <summary style={{ cursor: "pointer", fontWeight: 800, padding: "8px 0" }}>会话</summary>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                <FieldText k="SESSION_TIMEOUT_MINUTES" label="会话超时（分钟）" placeholder="30" />
-                <FieldText k="SESSION_MAX_HISTORY" label="会话最大历史条数" placeholder="50" />
-                <FieldText k="SESSION_STORAGE_PATH" label="会话存储路径" placeholder="data/sessions" />
+                <FT k="SESSION_TIMEOUT_MINUTES" label="会话超时（分钟）" placeholder="30" />
+                <FT k="SESSION_MAX_HISTORY" label="会话最大历史条数" placeholder="50" />
+                <FT k="SESSION_STORAGE_PATH" label="会话存储路径" placeholder="data/sessions" />
               </div>
             </details>
 
@@ -7616,9 +5961,9 @@ export function App() {
                   />
                   启用定时任务调度器（推荐）
                 </label>
-                <FieldText k="SCHEDULER_TIMEZONE" label="时区" placeholder="Asia/Shanghai" />
-                <FieldText k="SCHEDULER_MAX_CONCURRENT" label="最大并发任务数" placeholder="5" />
-                <FieldText k="SCHEDULER_TASK_TIMEOUT" label="任务超时（秒）" placeholder="600" />
+                <FT k="SCHEDULER_TIMEZONE" label="时区" placeholder="Asia/Shanghai" />
+                <FT k="SCHEDULER_MAX_CONCURRENT" label="最大并发任务数" placeholder="5" />
+                <FT k="SCHEDULER_TASK_TIMEOUT" label="任务超时（秒）" placeholder="600" />
               </div>
             </details>
 
@@ -9027,455 +7372,81 @@ export function App() {
       <div className="onboardingShell">
         {renderOnboarding()}
 
-        {/* confirmDialog 在 onboarding 中也需要渲染 */}
-        {confirmDialog && (
-          <div className="modalOverlay" onClick={() => setConfirmDialog(null)}>
-            <div className="modalContent" style={{ maxWidth: 380, padding: 24 }} onClick={(e) => e.stopPropagation()}>
-              <div style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 20 }}>{confirmDialog.message}</div>
-              <div className="dialogFooter" style={{ justifyContent: "flex-end" }}>
-                <button className="btnSmall" onClick={() => setConfirmDialog(null)}>{t("common.cancel")}</button>
-                <button className="btnSmall" style={{ background: "var(--danger, #e53935)", color: "#fff", border: "none" }} onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}>{t("common.confirm")}</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Toast 在 onboarding 中也需要渲染 */}
-        {(busy || notice || error) && (
-          <div className="toastContainer">
-            {busy && <div className="toast toastInfo">{busy}</div>}
-            {notice && <div className="toast toastOk" onClick={() => setNotice(null)}>{notice}</div>}
-            {error && <div className="toast toastError" onClick={() => setError(null)}>{error}</div>}
-          </div>
-        )}
+        <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
+        <ToastContainer busy={busy} notice={notice} error={error} onDismissNotice={() => setNotice(null)} onDismissError={() => setError(null)} />
       </div>
     );
   }
 
   return (
     <div className={`appShell ${sidebarCollapsed ? "appShellCollapsed" : ""}`}>
-      <aside className={`sidebar ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
-        <div className="sidebarHeader">
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img
-              src={logoUrl}
-              alt="OpenAkita"
-              className="brandLogo"
-              onClick={() => setSidebarCollapsed((v) => !v)}
-              style={{ cursor: "pointer" }}
-              title={sidebarCollapsed ? t("sidebar.expand") : t("sidebar.collapse")}
-            />
-            {!sidebarCollapsed && (
-              <div>
-                <div className="brandTitle">{t("brand.title")}</div>
-                <div className="brandSub">{t("brand.sub")}</div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Primary nav */}
-        <div className="sidebarNav">
-          <div className={`navItem ${view === "chat" ? "navItemActive" : ""}`} onClick={() => setView("chat")} role="button" tabIndex={0} title={t("sidebar.chat")}>
-            <IconChat size={16} /> {!sidebarCollapsed && <span>{t("sidebar.chat")}</span>}
-          </div>
-          <div className={`navItem ${view === "im" ? "navItemActive" : ""}`} onClick={() => setView("im")} role="button" tabIndex={0} title={t("sidebar.im")} style={disabledViews.includes("im") ? { opacity: 0.4 } : undefined}>
-            <IconIM size={16} /> {!sidebarCollapsed && <span>{t("sidebar.im")}</span>}
-          </div>
-          <div className={`navItem ${view === "skills" ? "navItemActive" : ""}`} onClick={() => setView("skills")} role="button" tabIndex={0} title={t("sidebar.skills")} style={disabledViews.includes("skills") ? { opacity: 0.4 } : undefined}>
-            <IconSkills size={16} /> {!sidebarCollapsed && <span>{t("sidebar.skills")}</span>}
-          </div>
-          <div className={`navItem ${view === "mcp" ? "navItemActive" : ""}`} onClick={() => setView("mcp")} role="button" tabIndex={0} title="MCP" style={disabledViews.includes("mcp") ? { opacity: 0.4 } : undefined}>
-            <IconPlug size={16} /> {!sidebarCollapsed && <span>MCP <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup></span>}
-          </div>
-          <div className={`navItem ${view === "scheduler" ? "navItemActive" : ""}`} onClick={() => setView("scheduler")} role="button" tabIndex={0} title={t("sidebar.scheduler")} style={disabledViews.includes("scheduler") ? { opacity: 0.4 } : undefined}>
-            <IconCalendar size={16} /> {!sidebarCollapsed && <span>{t("sidebar.scheduler")} <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup></span>}
-          </div>
-          <div className={`navItem ${view === "memory" ? "navItemActive" : ""}`} onClick={() => setView("memory")} role="button" tabIndex={0} title={t("sidebar.memory")} style={disabledViews.includes("memory") ? { opacity: 0.4 } : undefined}>
-            <IconBrain size={16} /> {!sidebarCollapsed && <span>{t("sidebar.memory")} <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup></span>}
-          </div>
-          {/* 模块页面已隐藏，功能保留但不在侧边栏展示 */}
-          <div className={`navItem ${view === "status" ? "navItemActive" : ""}`} onClick={async () => { setView("status"); try { await refreshStatus(undefined, undefined, true); } catch { /* ignore */ } }} role="button" tabIndex={0} title={t("sidebar.status")}>
-            <IconStatus size={16} /> {!sidebarCollapsed && <span>{t("sidebar.status")}</span>}
-          </div>
-          <div className={`navItem ${view === "token_stats" ? "navItemActive" : ""}`} onClick={() => setView("token_stats")} role="button" tabIndex={0} title={t("sidebar.tokenStats", "Token 统计")} style={disabledViews.includes("token_stats") ? { opacity: 0.4 } : undefined}>
-            <IconZap size={16} /> {!sidebarCollapsed && <span>{t("sidebar.tokenStats", "Token 统计")}</span>}
-          </div>
-          {multiAgentEnabled && (
-            <div className={`navItem ${view === "dashboard" ? "navItemActive" : ""}`} onClick={() => setView("dashboard")} role="button" tabIndex={0} title={t("sidebar.dashboard")}>
-              <IconUsers size={16} /> {!sidebarCollapsed && <span>{t("sidebar.dashboard")} <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup></span>}
-            </div>
-          )}
-          {multiAgentEnabled && (
-            <div className={`navItem ${view === "agent_manager" ? "navItemActive" : ""}`} onClick={() => setView("agent_manager")} role="button" tabIndex={0} title={t("sidebar.agentManager")}>
-              <IconBot size={16} /> {!sidebarCollapsed && <span>{t("sidebar.agentManager")}</span>}
-            </div>
-          )}
-        </div>
-
-        {/* Collapsible Config section */}
-        <div className="configSection">
-          <div className="configHeader" onClick={() => { if (sidebarCollapsed) { setView("wizard"); setConfigExpanded(true); } else if (view !== "wizard") { setView("wizard"); setConfigExpanded(true); } else { setConfigExpanded((v) => !v); } }} role="button" tabIndex={0} title={t("sidebar.config")}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <IconConfig size={16} />
-              {!sidebarCollapsed && <span>{t("sidebar.config")}</span>}
-            </div>
-            {!sidebarCollapsed && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                {configExpanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
-              </div>
-            )}
-          </div>
-          {!sidebarCollapsed && configExpanded && (
-            <div className="stepList">
-              {steps.map((s, idx) => {
-                const isActive = view === "wizard" && s.id === stepId;
-                return (
-                  <div
-                    key={s.id}
-                    className={`stepItem ${isActive ? "stepItemActive" : ""}`}
-                    onClick={() => { setView("wizard"); setStepId(s.id); }}
-                    role="button" tabIndex={0}
-                  >
-                    <StepDot stepId={s.id} />
-                    <div className="stepMeta"><div className="stepTitle">{s.title}</div></div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Multi-Agent Mode Toggle */}
-        {!sidebarCollapsed && (
-          <div style={{
-            padding: "12px 18px",
-            borderTop: "1px solid var(--line)",
-            marginTop: "auto",
-          }}>
-            <div style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 13, color: "var(--fg)" }}>
-                  {t("config.multiAgentMode")}
-                </span>
-                <span style={{
-                  fontSize: 10, padding: "1px 5px", borderRadius: 4,
-                  background: "var(--accent)", color: "#fff",
-                  fontWeight: 600, letterSpacing: 0.5,
-                }}>
-                  {t("config.multiAgentBeta")}
-                </span>
-              </div>
-              <div
-                onClick={toggleMultiAgent}
-                style={{
-                  width: 40, height: 22, borderRadius: 11, cursor: "pointer",
-                  background: multiAgentEnabled ? "var(--ok)" : "var(--line)",
-                  position: "relative", transition: "background 0.2s",
-                }}
-              >
-                <div style={{
-                  width: 18, height: 18, borderRadius: 9, background: "#fff",
-                  position: "absolute", top: 2,
-                  left: multiAgentEnabled ? 20 : 2,
-                  transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-                }} />
-              </div>
-            </div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-              {multiAgentEnabled ? t("config.multiAgentOn") : t("config.multiAgentOff")}
-            </div>
-          </div>
-        )}
-
-        {/* Version info + website link + bug report at sidebar bottom */}
-        {!sidebarCollapsed && (
-          <div style={{
-            padding: "10px 16px",
-            borderTop: "1px solid var(--line)",
-            fontSize: 11,
-            opacity: 0.4,
-            lineHeight: 1.6,
-            flexShrink: 0,
-          }}>
-            <div>Desktop v{desktopVersion}{import.meta.env.VITE_PREVIEW_BUILD === "true" && <span style={{ marginLeft: 6, color: "#e8a735", fontWeight: 600, opacity: 1 }}>预览版</span>}</div>
-            {backendVersion && <div>Backend v{backendVersion}</div>}
-            {!backendVersion && serviceStatus?.running && <div>Backend: -</div>}
-            <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 10 }}>
-              <a
-                href="https://openakita.ai"
-                style={{ color: "var(--accent, #5B8DEF)", textDecoration: "none", opacity: 1 }}
-                onMouseEnter={(e) => (e.currentTarget.style.textDecoration = "underline")}
-                onMouseLeave={(e) => (e.currentTarget.style.textDecoration = "none")}
-              >
-                <IconGlobe size={11} style={{ verticalAlign: "-1px", marginRight: 3 }} />
-                openakita.ai
-              </a>
-              {serviceStatus?.running && (
-                <span
-                  onClick={() => setBugReportOpen(true)}
-                  title={t("feedback.trigger")}
-                  style={{ cursor: "pointer", opacity: 1, color: "var(--accent, #5B8DEF)", display: "inline-flex", alignItems: "center", gap: 3 }}
-                  onMouseEnter={(e) => (e.currentTarget.style.textDecoration = "underline")}
-                  onMouseLeave={(e) => (e.currentTarget.style.textDecoration = "none")}
-                >
-                  <IconBug size={11} />
-                  {t("feedback.trigger")}
-                </span>
-              )}
-              <a
-                href="https://github.com/openakita/openakita"
-                title="GitHub"
-                style={{ color: "var(--accent, #5B8DEF)", opacity: 1, display: "inline-flex", alignItems: "center" }}
-              >
-                <IconGitHub size={13} />
-              </a>
-              <a
-                href="https://gitee.com/zacon365/openakita"
-                title="Gitee"
-                style={{ color: "var(--accent, #5B8DEF)", opacity: 1, display: "inline-flex", alignItems: "center" }}
-              >
-                <IconGitee size={13} />
-              </a>
-            </div>
-          </div>
-        )}
-        {sidebarCollapsed && (
-          <div style={{
-            padding: "8px 0",
-            borderTop: "1px solid var(--line)",
-            flexShrink: 0,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 6,
-          }}>
-            <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
-              <a
-                href="https://openakita.ai"
-                title="openakita.ai"
-                style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex" }}
-              >
-                <IconGlobe size={14} />
-              </a>
-              {serviceStatus?.running && (
-                <span
-                  onClick={() => setBugReportOpen(true)}
-                  title={t("feedback.trigger")}
-                  style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex", cursor: "pointer" }}
-                >
-                  <IconBug size={14} />
-                </span>
-              )}
-            </div>
-            <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
-              <a
-                href="https://github.com/openakita/openakita"
-                title="GitHub"
-                style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex" }}
-              >
-                <IconGitHub size={14} />
-              </a>
-              <a
-                href="https://gitee.com/zacon365/openakita"
-                title="Gitee"
-                style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex" }}
-              >
-                <IconGitee size={14} />
-              </a>
-            </div>
-          </div>
-        )}
-      </aside>
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
+        view={view}
+        onViewChange={setView}
+        configExpanded={configExpanded}
+        onToggleConfig={() => {
+          if (sidebarCollapsed) { setView("wizard"); setConfigExpanded(true); }
+          else if (view !== "wizard") { setView("wizard"); setConfigExpanded(true); }
+          else { setConfigExpanded((v) => !v); }
+        }}
+        steps={steps}
+        stepId={stepId}
+        onStepChange={setStepId}
+        disabledViews={disabledViews}
+        multiAgentEnabled={multiAgentEnabled}
+        onToggleMultiAgent={toggleMultiAgent}
+        desktopVersion={desktopVersion}
+        backendVersion={backendVersion}
+        serviceRunning={serviceStatus?.running ?? false}
+        onBugReport={() => setBugReportOpen(true)}
+        onRefreshStatus={async () => { await refreshStatus(undefined, undefined, true); }}
+      />
 
       <main className="main">
-        {/* Compact status bar */}
-        <div className="topbar">
-          <div className="topbarStatusRow">
-            {/* Workspace quick switcher */}
-            <span className="topbarWs" style={{ position: "relative", cursor: "pointer", userSelect: "none" }}>
-              <span
-                onClick={() => setWsDropdownOpen((v) => !v)}
-                title={t("topbar.switchWorkspace")}
-                style={{ display: "inline-flex", alignItems: "center", gap: 3 }}
-              >
-                {currentWorkspaceId || "default"}
-                <span style={{ fontSize: 8, opacity: 0.6 }}>▾</span>
-              </span>
-              {wsDropdownOpen && (
-                <div
-                  style={{
-                    position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 999,
-                    background: "var(--card-bg, #fff)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8,
-                    boxShadow: "var(--shadow)", minWidth: 220, padding: "6px 0",
-                  }}
-                  onMouseLeave={() => setWsDropdownOpen(false)}
-                >
-                  {workspaces.length === 0 && (
-                    <div style={{ padding: "8px 14px", fontSize: 12, opacity: 0.5 }}>{t("topbar.noWorkspaces")}</div>
-                  )}
-                  {workspaces.map((w) => (
-                    <div
-                      key={w.id}
-                      style={{
-                        padding: "7px 14px", cursor: "pointer", fontSize: 13,
-                        background: w.isCurrent ? "rgba(14,165,233,0.08)" : "transparent",
-                        fontWeight: w.isCurrent ? 700 : 400,
-                        display: "flex", justifyContent: "space-between", alignItems: "center",
-                      }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(14,165,233,0.12)"; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = w.isCurrent ? "rgba(14,165,233,0.08)" : "transparent"; }}
-                      onClick={async () => {
-                        if (w.isCurrent) { setWsDropdownOpen(false); return; }
-                        setWsDropdownOpen(false);
-                        await doSetCurrentWorkspace(w.id);
-                      }}
-                    >
-                      <span>{w.name} <span style={{ opacity: 0.5, fontSize: 11 }}>({w.id})</span></span>
-                      {w.isCurrent && <span style={{ color: "var(--brand)", fontSize: 11 }}>✓</span>}
-                    </div>
-                  ))}
-                  <div style={{ borderTop: "1px solid var(--line)", margin: "4px 0" }} />
-                  {!wsQuickCreateOpen ? (
-                    <div
-                      style={{ padding: "7px 14px", cursor: "pointer", fontSize: 12, color: "var(--brand)", fontWeight: 600 }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(14,165,233,0.08)"; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-                      onClick={() => { setWsQuickCreateOpen(true); setWsQuickName(""); }}
-                    >
-                      + {t("topbar.quickCreateWs")}
-                    </div>
-                  ) : (
-                    <div style={{ padding: "6px 12px" }}>
-                      <input
-                        autoFocus
-                        style={{ width: "100%", fontSize: 12, marginBottom: 6 }}
-                        value={wsQuickName}
-                        onChange={(e) => setWsQuickName(e.target.value)}
-                        placeholder={t("topbar.quickCreateWsPlaceholder")}
-                        onKeyDown={async (e) => {
-                          if (e.key === "Enter" && wsQuickName.trim()) {
-                            const raw = wsQuickName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
-                            const id = raw && /[a-z0-9]/.test(raw) ? raw : `ws_${Date.now()}`;
-                            try {
-                              await invoke("create_workspace", { id, name: wsQuickName.trim(), setCurrent: true });
-                              await refreshAll();
-                              setCurrentWorkspaceId(id);
-                              envLoadedForWs.current = null;
-                              setNotice(`${wsQuickName.trim()} (${id})`);
-                            } catch (err: any) { setError(String(err)); }
-                            setWsQuickCreateOpen(false);
-                            setWsDropdownOpen(false);
-                          } else if (e.key === "Escape") {
-                            setWsQuickCreateOpen(false);
-                          }
-                        }}
-                      />
-                      <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
-                        <button style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => setWsQuickCreateOpen(false)}>
-                          {t("topbar.quickCreateWsCancel")}
-                        </button>
-                        <button
-                          className="btnPrimary"
-                          style={{ fontSize: 11, padding: "2px 8px" }}
-                          disabled={!wsQuickName.trim()}
-                          onClick={async () => {
-                            const name = wsQuickName.trim();
-                            const rawId = name.toLowerCase().replace(/[^a-z0-9_-]/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
-                            const id = rawId && /[a-z0-9]/.test(rawId) ? rawId : `ws_${Date.now()}`;
-                            try {
-                              await invoke("create_workspace", { id, name, setCurrent: true });
-                              await refreshAll();
-                              setCurrentWorkspaceId(id);
-                              envLoadedForWs.current = null;
-                              setNotice(`${name} (${id})`);
-                            } catch (err: any) { setError(String(err)); }
-                            setWsQuickCreateOpen(false);
-                            setWsDropdownOpen(false);
-                          }}
-                        >
-                          {t("topbar.quickCreateWsOk")}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </span>
-            <span className="topbarIndicator">
-              {serviceStatus?.running ? <DotGreen /> : <DotGray />}
-              <span>{serviceStatus?.running ? t("topbar.running") : t("topbar.stopped")}</span>
-            </span>
-            <span className="topbarEpCount">{t("topbar.endpoints", { count: endpointSummary.length })}</span>
-            {dataMode === "remote" && <span className="pill" style={{ fontSize: 10, marginLeft: 4, background: "#e3f2fd", color: "#1565c0" }}>{t("connect.remoteMode")}</span>}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {serviceStatus?.running ? (
-              <button
-                className="topbarConnectBtn"
-                onClick={() => {
-                  // Disconnect: reset to local idle mode
-                  setDataMode("local");
-                  setServiceStatus({ running: false, pid: null, pidFile: "" });
-                  envLoadedForWs.current = null;
-                  setNotice(t("topbar.disconnected"));
-                }}
-                disabled={!!busy}
-                title={t("topbar.disconnect")}
-              >
-                <IconX size={13} />
-                <span>{t("topbar.disconnect")}</span>
-              </button>
-            ) : (
-              <>
-                <button
-                  className="topbarConnectBtn"
-                  onClick={() => {
-                    setConnectAddress(apiBaseUrl.replace(/^https?:\/\//, ""));
-                    setConnectDialogOpen(true);
-                  }}
-                  disabled={!!busy}
-                  title={t("topbar.connect")}
-                >
-                  <IconLink size={13} />
-                  <span>{t("topbar.connect")}</span>
-                </button>
-                <button
-                  className="topbarConnectBtn"
-                  onClick={async () => {
-                    const effectiveWsId = currentWorkspaceId || workspaces[0]?.id || null;
-                    if (!effectiveWsId) { setError(t("common.error")); return; }
-                    await startLocalServiceWithConflictCheck(effectiveWsId);
-                  }}
-                  disabled={!!busy}
-                  title={t("topbar.start")}
-                >
-                  <IconPower size={13} />
-                  <span>{t("topbar.start")}</span>
-                </button>
-              </>
-            )}
-            <button className="topbarRefreshBtn" onClick={async () => { await refreshAll(); try { await refreshStatus(undefined, undefined, true); } catch {} }} disabled={!!busy} title={t("topbar.refresh")}>
-              <IconRefresh size={14} />
-            </button>
-            <button
-              className="topbarRefreshBtn"
-              onClick={toggleTheme}
-              title={themePrefState === "system" ? "主题: 随系统" : themePrefState === "dark" ? "主题: 暗色" : "主题: 亮色"}
-            >
-              {themePrefState === "system" ? <IconLaptop size={14} /> : themePrefState === "dark" ? <IconMoon size={14} /> : <IconSun size={14} />}
-            </button>
-            <button
-              className="topbarRefreshBtn"
-              onClick={() => { i18n.changeLanguage(i18n.language?.startsWith("zh") ? "en" : "zh"); }}
-              title="中/EN"
-            >
-              <IconGlobe size={14} />
-            </button>
-          </div>
-        </div>
+        <Topbar
+          wsDropdownOpen={wsDropdownOpen}
+          setWsDropdownOpen={setWsDropdownOpen}
+          currentWorkspaceId={currentWorkspaceId}
+          workspaces={workspaces}
+          onSwitchWorkspace={doSetCurrentWorkspace}
+          wsQuickCreateOpen={wsQuickCreateOpen}
+          setWsQuickCreateOpen={setWsQuickCreateOpen}
+          wsQuickName={wsQuickName}
+          setWsQuickName={setWsQuickName}
+          onCreateWorkspace={async (id, name) => {
+            try {
+              await invoke("create_workspace", { id, name, setCurrent: true });
+              await refreshAll();
+              setCurrentWorkspaceId(id);
+              envLoadedForWs.current = null;
+              setNotice(`${name} (${id})`);
+            } catch (err: any) { setError(String(err)); }
+          }}
+          serviceRunning={serviceStatus?.running ?? false}
+          endpointCount={endpointSummary.length}
+          dataMode={dataMode}
+          busy={busy}
+          onDisconnect={() => {
+            setDataMode("local");
+            setServiceStatus({ running: false, pid: null, pidFile: "" });
+            envLoadedForWs.current = null;
+            setNotice(t("topbar.disconnected"));
+          }}
+          onConnect={() => {
+            setConnectAddress(apiBaseUrl.replace(/^https?:\/\//, ""));
+            setConnectDialogOpen(true);
+          }}
+          onStart={async () => {
+            const effectiveWsId = currentWorkspaceId || workspaces[0]?.id || null;
+            if (!effectiveWsId) { setError(t("common.error")); return; }
+            await startLocalServiceWithConflictCheck(effectiveWsId);
+          }}
+          onRefreshAll={async () => { await refreshAll(); try { await refreshStatus(undefined, undefined, true); } catch {} }}
+          toggleTheme={toggleTheme}
+          themePrefState={themePrefState}
+        />
 
         {/* ChatView 始终挂载，切走时隐藏以保留聊天记录 */}
         <div className="contentChat" style={{ display: view === "chat" ? undefined : "none" }}>
@@ -9723,27 +7694,8 @@ export function App() {
           </div>
         )}
 
-        {/* ── Generic confirm dialog ── */}
-        {confirmDialog && (
-          <div className="modalOverlay" onClick={() => setConfirmDialog(null)}>
-            <div className="modalContent" style={{ maxWidth: 380, padding: 24 }} onClick={(e) => e.stopPropagation()}>
-              <div style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 20 }}>{confirmDialog.message}</div>
-              <div className="dialogFooter" style={{ justifyContent: "flex-end" }}>
-                <button className="btnSmall" onClick={() => setConfirmDialog(null)}>{t("common.cancel")}</button>
-                <button className="btnSmall" style={{ background: "var(--danger, #e53935)", color: "#fff", border: "none" }} onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}>{t("common.confirm")}</button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Fixed Toast Notifications */}
-        {(busy || notice || error) && (
-          <div className="toastContainer">
-            {busy && <div className="toast toastInfo">{busy}</div>}
-            {notice && <div className="toast toastOk" onClick={() => setNotice(null)}>{notice}</div>}
-            {error && <div className="toast toastError" onClick={() => setError(null)}>{error}</div>}
-          </div>
-        )}
+        <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
+        <ToastContainer busy={busy} notice={notice} error={error} onDismissNotice={() => setNotice(null)} onDismissError={() => setError(null)} />
 
         {view === "wizard" ? (() => {
           const saveConfig = getFooterSaveConfig();

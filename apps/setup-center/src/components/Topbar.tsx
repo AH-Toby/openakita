@@ -1,0 +1,207 @@
+import { useTranslation } from "react-i18next";
+import type { WorkspaceSummary } from "../types";
+import type { Theme } from "../theme";
+import {
+  DotGreen, DotGray,
+  IconX, IconLink, IconPower, IconRefresh,
+  IconLaptop, IconMoon, IconSun, IconGlobe,
+} from "../icons";
+
+export type TopbarProps = {
+  wsDropdownOpen: boolean;
+  setWsDropdownOpen: (v: boolean | ((prev: boolean) => boolean)) => void;
+  currentWorkspaceId: string | null;
+  workspaces: WorkspaceSummary[];
+  onSwitchWorkspace: (id: string) => Promise<void>;
+  wsQuickCreateOpen: boolean;
+  setWsQuickCreateOpen: (v: boolean) => void;
+  wsQuickName: string;
+  setWsQuickName: (v: string) => void;
+  onCreateWorkspace: (id: string, name: string) => Promise<void>;
+  serviceRunning: boolean;
+  endpointCount: number;
+  dataMode: "local" | "remote";
+  busy: string | null;
+  onDisconnect: () => void;
+  onConnect: () => void;
+  onStart: () => Promise<void>;
+  onRefreshAll: () => Promise<void>;
+  toggleTheme: () => void;
+  themePrefState: Theme;
+};
+
+export function Topbar({
+  wsDropdownOpen, setWsDropdownOpen,
+  currentWorkspaceId, workspaces,
+  onSwitchWorkspace,
+  wsQuickCreateOpen, setWsQuickCreateOpen,
+  wsQuickName, setWsQuickName,
+  onCreateWorkspace,
+  serviceRunning, endpointCount, dataMode, busy,
+  onDisconnect, onConnect, onStart, onRefreshAll,
+  toggleTheme, themePrefState,
+}: TopbarProps) {
+  const { t, i18n } = useTranslation();
+
+  return (
+    <div className="topbar">
+      <div className="topbarStatusRow">
+        {/* Workspace quick switcher */}
+        <span className="topbarWs" style={{ position: "relative", cursor: "pointer", userSelect: "none" }}>
+          <span
+            onClick={() => setWsDropdownOpen((v: boolean) => !v)}
+            title={t("topbar.switchWorkspace")}
+            style={{ display: "inline-flex", alignItems: "center", gap: 3 }}
+          >
+            {currentWorkspaceId || "default"}
+            <span style={{ fontSize: 8, opacity: 0.6 }}>▾</span>
+          </span>
+          {wsDropdownOpen && (
+            <div
+              style={{
+                position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 999,
+                background: "var(--card-bg, #fff)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8,
+                boxShadow: "var(--shadow)", minWidth: 220, padding: "6px 0",
+              }}
+              onMouseLeave={() => setWsDropdownOpen(false)}
+            >
+              {workspaces.length === 0 && (
+                <div style={{ padding: "8px 14px", fontSize: 12, opacity: 0.5 }}>{t("topbar.noWorkspaces")}</div>
+              )}
+              {workspaces.map((w) => (
+                <div
+                  key={w.id}
+                  style={{
+                    padding: "7px 14px", cursor: "pointer", fontSize: 13,
+                    background: w.isCurrent ? "rgba(14,165,233,0.08)" : "transparent",
+                    fontWeight: w.isCurrent ? 700 : 400,
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(14,165,233,0.12)"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = w.isCurrent ? "rgba(14,165,233,0.08)" : "transparent"; }}
+                  onClick={async () => {
+                    if (w.isCurrent) { setWsDropdownOpen(false); return; }
+                    setWsDropdownOpen(false);
+                    await onSwitchWorkspace(w.id);
+                  }}
+                >
+                  <span>{w.name} <span style={{ opacity: 0.5, fontSize: 11 }}>({w.id})</span></span>
+                  {w.isCurrent && <span style={{ color: "var(--brand)", fontSize: 11 }}>✓</span>}
+                </div>
+              ))}
+              <div style={{ borderTop: "1px solid var(--line)", margin: "4px 0" }} />
+              {!wsQuickCreateOpen ? (
+                <div
+                  style={{ padding: "7px 14px", cursor: "pointer", fontSize: 12, color: "var(--brand)", fontWeight: 600 }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(14,165,233,0.08)"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                  onClick={() => { setWsQuickCreateOpen(true); setWsQuickName(""); }}
+                >
+                  + {t("topbar.quickCreateWs")}
+                </div>
+              ) : (
+                <div style={{ padding: "6px 12px" }}>
+                  <input
+                    autoFocus
+                    style={{ width: "100%", fontSize: 12, marginBottom: 6 }}
+                    value={wsQuickName}
+                    onChange={(e) => setWsQuickName(e.target.value)}
+                    placeholder={t("topbar.quickCreateWsPlaceholder")}
+                    onKeyDown={async (e) => {
+                      if (e.key === "Enter" && wsQuickName.trim()) {
+                        const raw = wsQuickName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
+                        const id = raw && /[a-z0-9]/.test(raw) ? raw : `ws_${Date.now()}`;
+                        await onCreateWorkspace(id, wsQuickName.trim());
+                        setWsQuickCreateOpen(false);
+                        setWsDropdownOpen(false);
+                      } else if (e.key === "Escape") {
+                        setWsQuickCreateOpen(false);
+                      }
+                    }}
+                  />
+                  <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                    <button style={{ fontSize: 11, padding: "2px 8px" }} onClick={() => setWsQuickCreateOpen(false)}>
+                      {t("topbar.quickCreateWsCancel")}
+                    </button>
+                    <button
+                      className="btnPrimary"
+                      style={{ fontSize: 11, padding: "2px 8px" }}
+                      disabled={!wsQuickName.trim()}
+                      onClick={async () => {
+                        const name = wsQuickName.trim();
+                        const rawId = name.toLowerCase().replace(/[^a-z0-9_-]/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
+                        const id = rawId && /[a-z0-9]/.test(rawId) ? rawId : `ws_${Date.now()}`;
+                        await onCreateWorkspace(id, name);
+                        setWsQuickCreateOpen(false);
+                        setWsDropdownOpen(false);
+                      }}
+                    >
+                      {t("topbar.quickCreateWsOk")}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </span>
+        <span className="topbarIndicator">
+          {serviceRunning ? <DotGreen /> : <DotGray />}
+          <span>{serviceRunning ? t("topbar.running") : t("topbar.stopped")}</span>
+        </span>
+        <span className="topbarEpCount">{t("topbar.endpoints", { count: endpointCount })}</span>
+        {dataMode === "remote" && <span className="pill" style={{ fontSize: 10, marginLeft: 4, background: "#e3f2fd", color: "#1565c0" }}>{t("connect.remoteMode")}</span>}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        {serviceRunning ? (
+          <button
+            className="topbarConnectBtn"
+            onClick={onDisconnect}
+            disabled={!!busy}
+            title={t("topbar.disconnect")}
+          >
+            <IconX size={13} />
+            <span>{t("topbar.disconnect")}</span>
+          </button>
+        ) : (
+          <>
+            <button
+              className="topbarConnectBtn"
+              onClick={onConnect}
+              disabled={!!busy}
+              title={t("topbar.connect")}
+            >
+              <IconLink size={13} />
+              <span>{t("topbar.connect")}</span>
+            </button>
+            <button
+              className="topbarConnectBtn"
+              onClick={onStart}
+              disabled={!!busy}
+              title={t("topbar.start")}
+            >
+              <IconPower size={13} />
+              <span>{t("topbar.start")}</span>
+            </button>
+          </>
+        )}
+        <button className="topbarRefreshBtn" onClick={onRefreshAll} disabled={!!busy} title={t("topbar.refresh")}>
+          <IconRefresh size={14} />
+        </button>
+        <button
+          className="topbarRefreshBtn"
+          onClick={toggleTheme}
+          title={themePrefState === "system" ? "主题: 随系统" : themePrefState === "dark" ? "主题: 暗色" : "主题: 亮色"}
+        >
+          {themePrefState === "system" ? <IconLaptop size={14} /> : themePrefState === "dark" ? <IconMoon size={14} /> : <IconSun size={14} />}
+        </button>
+        <button
+          className="topbarRefreshBtn"
+          onClick={() => { i18n.changeLanguage(i18n.language?.startsWith("zh") ? "en" : "zh"); }}
+          title="中/EN"
+        >
+          <IconGlobe size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
