@@ -294,25 +294,29 @@ jobs:
             FRAMEWORK_DIR="${app}/Contents/Resources/resources/openakita-server/_internal/Python.framework"
             if [ -d "${FRAMEWORK_DIR}" ]; then
               SIGNED_REALPATHS_FILE="$(mktemp)"
-              # 1) Sign Python executables first (with runtime + timestamp).
+
+              # Apple code-signing requires strict inside-out order:
+              #   innermost executables → containing bundles → framework version binaries
+              # Each layer's signature seals its contents, so inner layers must be
+              # signed before outer layers that reference them.
+
+              # 1) Sign executables inside Python.app bundles (deepest level).
               for pybin in \
                 "${FRAMEWORK_DIR}/Resources/Python.app/Contents/MacOS/Python" \
                 "${FRAMEWORK_DIR}/Versions/3.11/Resources/Python.app/Contents/MacOS/Python" \
-                "${FRAMEWORK_DIR}/Versions/Current/Resources/Python.app/Contents/MacOS/Python" \
-                "${FRAMEWORK_DIR}/Versions/Current/Python" \
-                "${FRAMEWORK_DIR}/Versions/3.11/Python"; do
+                "${FRAMEWORK_DIR}/Versions/Current/Resources/Python.app/Contents/MacOS/Python"; do
                 if [ -f "${pybin}" ]; then
                   REAL_PYBIN="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${pybin}")"
                   if grep -Fqx -- "${REAL_PYBIN}" "${SIGNED_REALPATHS_FILE}"; then
                     continue
                   fi
-                  echo "Re-signing Python framework binary: ${pybin} -> ${REAL_PYBIN}"
+                  echo "Signing Python.app executable: ${pybin}"
                   codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${REAL_PYBIN}"
                   printf '%s\n' "${REAL_PYBIN}" >> "${SIGNED_REALPATHS_FILE}"
                 fi
               done
 
-              # 2) Re-sign Python.app bundles (non-deep) so bundle seals follow binary signatures.
+              # 2) Sign Python.app bundles (seals the executables from step 1).
               for pyapp in \
                 "${FRAMEWORK_DIR}/Resources/Python.app" \
                 "${FRAMEWORK_DIR}/Versions/3.11/Resources/Python.app" \
@@ -322,32 +326,40 @@ jobs:
                   if grep -Fqx -- "${REAL_PYAPP}" "${SIGNED_REALPATHS_FILE}"; then
                     continue
                   fi
-                  echo "Re-signing Python.app bundle: ${pyapp} -> ${REAL_PYAPP}"
+                  echo "Signing Python.app bundle: ${pyapp}"
                   codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${REAL_PYAPP}"
                   printf '%s\n' "${REAL_PYAPP}" >> "${SIGNED_REALPATHS_FILE}"
                 fi
               done
 
-              # 3) Skip signing Python.framework as a bundle.
-              # codesign cannot determine the bundle type of Python.framework
-              # ("bundle format is ambiguous: could be app or framework") because
-              # it contains both Versions/ (framework layout) and Python.app
-              # (app layout).  All executables and sub-bundles are already signed
-              # in steps 1-2; the outer .app signing seals the framework contents.
+              # 3) Sign framework version main binaries LAST.
+              #    These are the framework's shared libraries; their signatures
+              #    seal over Resources/ (which contains the now-signed Python.app).
+              #    Signing them before Python.app would cause "sealed resource
+              #    is missing or invalid" because Python.app gets re-signed after.
+              for fwbin in \
+                "${FRAMEWORK_DIR}/Versions/3.11/Python" \
+                "${FRAMEWORK_DIR}/Versions/Current/Python"; do
+                if [ -f "${fwbin}" ]; then
+                  REAL_FWBIN="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${fwbin}")"
+                  if grep -Fqx -- "${REAL_FWBIN}" "${SIGNED_REALPATHS_FILE}"; then
+                    continue
+                  fi
+                  echo "Signing framework version binary: ${fwbin}"
+                  codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${REAL_FWBIN}"
+                  printf '%s\n' "${REAL_FWBIN}" >> "${SIGNED_REALPATHS_FILE}"
+                fi
+              done
 
-              # 4) Verify all touched framework paths before app-root signing.
-              while IFS= read -r signed_path; do
-                [ -n "${signed_path}" ] || continue
-                codesign --verify --strict --verbose=2 "${signed_path}"
-              done < "${SIGNED_REALPATHS_FILE}"
+              # Skip signing Python.framework as a bundle (codesign reports
+              # "bundle format is ambiguous" due to mixed app+framework layout).
 
               rm -f "${SIGNED_REALPATHS_FILE}"
             fi
 
-            echo "Re-signing app bundle root: ${app}"
-            # Avoid --deep here to preserve explicit nested signatures (especially framework bundles).
+            echo "Signing app bundle root: ${app}"
             codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${app}"
-            echo "Verifying app signature: ${app}"
+            echo "Verifying app signature (deep): ${app}"
             codesign --verify --deep --strict --verbose=2 "${app}"
           done
 
