@@ -310,16 +310,12 @@ jobs:
           find "$RESOURCE_DIR" -type f -perm +111 | while read -r bin; do
             # Sign Python.framework as a bundle explicitly (below), not per-file.
             if [[ "$bin" == *"/Python.framework/"* ]]; then
-              echo "  Skipping Python.framework inner binary (will sign bundle): $bin"
+              echo "  Skipping Python.framework inner binary at resource stage: $bin"
               continue
             fi
             echo "  Signing: $bin"
             codesign --force --options runtime --timestamp --sign "$IDENTITY" "$bin"
           done
-          while IFS= read -r -d '' framework; do
-            echo "  Signing framework bundle: $framework"
-            codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" "$framework"
-          done < <(find "$RESOURCE_DIR" -type d -name "Python.framework" -print0)
           echo "All embedded binaries signed."
 
       - name: Create gitignored placeholders for Rust build
@@ -428,8 +424,15 @@ jobs:
           for app in "${APPS[@]}"; do
             FRAMEWORK_DIR="${app}/Contents/Resources/resources/openakita-server/_internal/Python.framework"
             if [ -d "${FRAMEWORK_DIR}" ]; then
-              echo "Re-signing Python.framework bundle: ${FRAMEWORK_DIR}"
-              codesign --force --deep --options runtime --timestamp --sign "${IDENTITY}" "${FRAMEWORK_DIR}"
+              for pybin in \
+                "${FRAMEWORK_DIR}/Versions/3.11/Python" \
+                "${FRAMEWORK_DIR}/Versions/Current/Python" \
+                "${FRAMEWORK_DIR}/Resources/Python.app/Contents/MacOS/Python"; do
+                if [ -f "${pybin}" ]; then
+                  echo "Re-signing Python framework binary: ${pybin}"
+                  codesign --force --options runtime --timestamp --sign "${IDENTITY}" "${pybin}"
+                fi
+              done
             fi
 
             echo "Re-signing app bundle root: ${app}"
