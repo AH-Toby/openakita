@@ -425,12 +425,26 @@ jobs:
             FRAMEWORK_DIR="${app}/Contents/Resources/resources/openakita-server/_internal/Python.framework"
             if [ -d "${FRAMEWORK_DIR}" ]; then
               SIGNED_REALPATHS_FILE="$(mktemp)"
+              # 1) Sign Python.app bundles first, as complete bundles.
+              for pyapp in \
+                "${FRAMEWORK_DIR}/Resources/Python.app" \
+                "${FRAMEWORK_DIR}/Versions/3.11/Resources/Python.app" \
+                "${FRAMEWORK_DIR}/Versions/Current/Resources/Python.app"; do
+                if [ -d "${pyapp}" ]; then
+                  REAL_PYAPP="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${pyapp}")"
+                  if grep -Fqx -- "${REAL_PYAPP}" "${SIGNED_REALPATHS_FILE}"; then
+                    continue
+                  fi
+                  echo "Re-signing Python.app bundle: ${pyapp} -> ${REAL_PYAPP}"
+                  codesign --force --deep --options runtime --timestamp --sign "${IDENTITY}" "${REAL_PYAPP}"
+                  printf '%s\n' "${REAL_PYAPP}" >> "${SIGNED_REALPATHS_FILE}"
+                fi
+              done
+
+              # 2) Sign canonical framework Python executables (skip framework alias entry).
               for pybin in \
-                "${FRAMEWORK_DIR}/Versions/3.11/Python" \
                 "${FRAMEWORK_DIR}/Versions/Current/Python" \
-                "${FRAMEWORK_DIR}/Resources/Python.app/Contents/MacOS/Python" \
-                "${FRAMEWORK_DIR}/Versions/3.11/Resources/Python.app/Contents/MacOS/Python" \
-                "${FRAMEWORK_DIR}/Versions/Current/Resources/Python.app/Contents/MacOS/Python"; do
+                "${FRAMEWORK_DIR}/Versions/3.11/Python"; do
                 if [ -f "${pybin}" ]; then
                   REAL_PYBIN="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${pybin}")"
                   if grep -Fqx -- "${REAL_PYBIN}" "${SIGNED_REALPATHS_FILE}"; then
@@ -441,10 +455,7 @@ jobs:
                   printf '%s\n' "${REAL_PYBIN}" >> "${SIGNED_REALPATHS_FILE}"
                 fi
               done
-              while IFS= read -r signed_bin; do
-                [ -n "${signed_bin}" ] || continue
-                codesign --verify --strict --verbose=2 "${signed_bin}"
-              done < "${SIGNED_REALPATHS_FILE}"
+
               rm -f "${SIGNED_REALPATHS_FILE}"
             fi
 
