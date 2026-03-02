@@ -33,7 +33,8 @@
     "autoStartFail": "Auto-start failed. Please start manually.",
     "startFail": "Service failed to start. Check config.",
     "disconnect": "Disconnect",
-    "disconnected": "Disconnected from service"
+    "disconnected": "Disconnected from service",
+    "refreshed": "Refreshed"
   },
   "tokenStats": {
     "serviceNotRunning": "Service not running, unable to view stats",

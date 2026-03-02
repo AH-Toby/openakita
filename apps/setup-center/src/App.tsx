@@ -8870,7 +8870,7 @@ export function App() {
                 </button>
               </>
             )}
-            <button className="topbarRefreshBtn" onClick={async () => { await refreshAll(); try { await refreshStatus(undefined, undefined, true); } catch {} }} disabled={!!busy} title={t("topbar.refresh")}>
+            <button className="topbarRefreshBtn" onClick={async () => { await refreshAll(); try { await refreshStatus(undefined, undefined, true); } catch {} setNotice(t("topbar.refreshed")); }} disabled={!!busy} title={t("topbar.refresh")}>
               <IconRefresh size={14} />
             </button>
             <button
