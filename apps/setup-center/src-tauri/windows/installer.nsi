@@ -498,7 +498,7 @@ Function PageEnvCheck
  ${IfThen} $0 == "error" ${|} Abort ${|}
  ${IfThen} $(^RTL) = 1 ${|} nsDialogs::SetRTL $(^RTL) ${|}
 
- ${NSD_CreateLabel} 0 0 100% 26u "检测到旧版 OpenAkita 环境数据，可能影响新版本运行。$\n新版本已内置 Python 运行时，旧环境可以安全清理。"
+${NSD_CreateLabel} 0 0 100% 26u "检测到旧版 OpenAkita 环境数据，可能影响新版本运行。$\n新版本使用安装包内置 Python（bundled），旧环境可按需清理。"
  Pop $0
 
  ; ── 环境清理选项 (默认勾选) ──
@@ -511,7 +511,7 @@ Function PageEnvCheck
  ${EndIf}
 
  ${If} ${FileExists} "$R0\runtime\*.*"
-  ${NSD_CreateCheckbox} 14u 50u -14u 12u "清理 Python 运行时 (runtime) — 用于创建 venv，清理后需重新下载"
+ ${NSD_CreateCheckbox} 14u 50u -14u 12u "清理 Python 运行时缓存 (runtime) — 历史残留目录，清理后可由修复流程重建"
   Pop $EnvCleanRuntime
   ${NSD_SetState} $EnvCleanRuntime ${BST_UNCHECKED}
  ${EndIf}
@@ -644,7 +644,7 @@ Function PageLeaveEnvCheck
    ${If} $0 != 0
     ExecWait 'cmd /c rd /s /q "$R0"'
    ${EndIf}
-   ; 同时清理嵌入式 Python（模块安装可能下载了它）
+  ; 同时清理历史 Python 运行时残留目录
    ExpandEnvStrings $R0 "%USERPROFILE%\.openakita\python"
    System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R0)'
    ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction SilentlyContinue"' $0
@@ -696,7 +696,7 @@ Function PageLeaveEnvCheck
   ${If} $0 != 0
    ExecWait 'cmd /c rd /s /q "$R8"'
   ${EndIf}
-  ; 清理嵌入式 Python 环境
+ ; 清理历史 Python 运行时残留目录
   StrCpy $R8 "$R0\python"
   System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
   ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction SilentlyContinue"' $0

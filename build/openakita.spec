@@ -541,11 +541,23 @@ except ImportError:
     print("[spec] WARNING: requests_toolbelt not installed")
 
 # Built-in Python interpreter + pip (bundled mode can install optional modules without host Python)
-# Bundle system python.exe and pip module to _internal/, Rust side discovers via find_pip_python
+# IMPORTANT: do NOT bundle a venv launcher (it may require pyvenv.cfg at runtime).
+# Prefer base interpreter from sys.base_prefix, fallback to sys.executable.
 import shutil
 _sys_python_exe = Path(sys.executable)
+_base_prefix = Path(getattr(sys, "base_prefix", "")) if getattr(sys, "base_prefix", "") else None
+if _base_prefix:
+    if sys.platform == "win32":
+        _base_candidates = [_base_prefix / "python.exe"]
+    else:
+        _base_candidates = [_base_prefix / "bin" / "python3", _base_prefix / "bin" / "python"]
+    for _cand in _base_candidates:
+        if _cand.exists():
+            _sys_python_exe = _cand
+            print(f"[spec] Using base interpreter for bundled python: {_sys_python_exe}")
+            break
 if _sys_python_exe.exists():
-    datas.append((str(_sys_python_exe), "."))  # python.exe -> _internal/
+    datas.append((str(_sys_python_exe), "."))  # python* -> _internal/
 
 # pip and its dependencies (minimal set needed for pip install)
 import pip
@@ -650,58 +662,32 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-import sys as _sys
+# Contract A: all platforms use onedir output so runtime can always
+# discover bundled interpreter at openakita-server/_internal/python*
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="openakita-server",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=(sys.platform != "darwin"),
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
 
-# On macOS, use onefile mode to avoid COLLECT symlink issues with Python.framework
-# On other platforms, use onedir mode for faster startup
-if _sys.platform == "darwin":
-    # macOS: bundle everything into single executable
-    exe = EXE(
-        pyz,
-        a.scripts,
-        a.binaries,  # Include binaries in EXE for onefile mode
-        a.datas,     # Include datas in EXE for onefile mode
-        [],
-        name="openakita-server",
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=False,
-        upx=False,  # Disable UPX on macOS for stability
-        console=True,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-    )
-    # onefile mode outputs directly to distpath, no COLLECT needed
-    # build_backend.py will move it to the expected directory structure
-else:
-    # Windows/Linux: use onedir mode with COLLECT
-    exe = EXE(
-        pyz,
-        a.scripts,
-        [],
-        exclude_binaries=True,
-        name="openakita-server",
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=False,
-        upx=True,
-        console=True,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-    )
-
-    coll = COLLECT(
-        exe,
-        a.binaries,
-        a.datas,
-        strip=False,
-        upx=True,
-        upx_exclude=[],
-        name="openakita-server",
-    )
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=(sys.platform != "darwin"),
+    upx_exclude=[],
+    name="openakita-server",
+)

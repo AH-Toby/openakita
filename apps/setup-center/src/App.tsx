@@ -365,7 +365,7 @@ type PythonCandidate = {
   isUsable: boolean;
 };
 
-type EmbeddedPythonInstallResult = {
+type BundledPythonInstallResult = {
   pythonCommand: string[];
   pythonPath: string;
   installDir: string;
@@ -1183,14 +1183,9 @@ export function App() {
   const [pypiVersions, setPypiVersions] = useState<string[]>([]);
   const [pypiVersionsLoading, setPypiVersionsLoading] = useState(false);
   const [selectedPypiVersion, setSelectedPypiVersion] = useState<string>(""); // "" = 推荐同版本
-  // custom python / venv
-  const [customPythonPath, setCustomPythonPath] = useState<string>("");
-  const [customVenvPath, setCustomVenvPath] = useState<string>("");
-  const [customPathStatus, setCustomPathStatus] = useState<string>("");
-  const [customVenvStatus, setCustomVenvStatus] = useState<string>("");
   // python diagnostics / repair
   const [pyDiag, setPyDiag] = useState<{
-    embeddedPythonOk: boolean; embeddedPythonPath: string | null;
+    bundledPythonOk: boolean; bundledPythonPath: string | null;
     venvOk: boolean; venvPath: string | null; venvPythonVersion: string | null;
     openakitaInstalled: boolean; openakitaVersion: string | null;
     systemPythonOk: boolean; systemPythonPath: string | null;
@@ -1773,13 +1768,13 @@ export function App() {
 
   async function doDetectPython() {
     setError(null);
-    setBusy("检测系统 Python...");
+    setBusy("检测项目 Python 环境...");
     try {
       const cands = await invoke<PythonCandidate[]>("detect_python");
       setPythonCandidates(cands);
       const firstUsable = cands.findIndex((c) => c.isUsable);
       setSelectedPythonIdx(firstUsable);
-      setNotice(firstUsable >= 0 ? "已找到可用 Python（3.11+）" : "未找到可用 Python（建议安装内置 Python）");
+      setNotice(firstUsable >= 0 ? "已找到可用 Python（3.11+）" : "未找到可用内置 Python（请检查安装包完整性）");
     } catch (e) {
       setError(String(e));
     } finally {
@@ -1789,22 +1784,22 @@ export function App() {
 
   async function doInstallEmbeddedPython() {
     setError(null);
-    setBusy("下载/安装内置 Python...");
+    setBusy("检查内置 Python...");
     try {
-      setVenvStatus("下载/安装内置 Python 中...");
-      const r = await invoke<EmbeddedPythonInstallResult>("install_embedded_python", { pythonSeries: "3.11" });
+      setVenvStatus("检查内置 Python 中...");
+      const r = await invoke<BundledPythonInstallResult>("install_bundled_python", { pythonSeries: "3.11" });
       const cand: PythonCandidate = {
         command: r.pythonCommand,
-        versionText: `embedded (${r.tag}): ${r.assetName}`,
+        versionText: `bundled (${r.tag}): ${r.assetName}`,
         isUsable: true,
       };
       setPythonCandidates((prev) => [cand, ...prev.filter((p) => p.command.join(" ") !== cand.command.join(" "))]);
       setSelectedPythonIdx(0);
       setVenvStatus(`内置 Python 就绪：${r.pythonPath}`);
-      setNotice("内置 Python 安装完成，可以继续创建 venv");
+      setNotice("内置 Python 可用，可以继续创建 venv");
     } catch (e) {
       setError(String(e));
-      setVenvStatus(`内置 Python 安装失败：${String(e)}`);
+      setVenvStatus(`内置 Python 不可用：${String(e)}`);
     } finally {
       setBusy(null);
     }
@@ -1831,81 +1826,20 @@ export function App() {
     }
   }
 
-  async function persistPythonEnvConfig(venvPath: string, pythonExe?: string) {
+  async function persistPythonEnvConfig(venvPath: string) {
     if (!currentWorkspaceId) return;
     try {
       const entries: { key: string; value: string }[] = [
         { key: "PYTHON_VENV_PATH", value: venvPath },
       ];
-      if (pythonExe) {
-        entries.push({ key: "PYTHON_EXECUTABLE", value: pythonExe });
-      }
       await invoke("workspace_update_env", { workspaceId: currentWorkspaceId, entries });
       setEnvDraft((prev) => {
         const next = { ...prev };
         next["PYTHON_VENV_PATH"] = venvPath;
-        if (pythonExe) next["PYTHON_EXECUTABLE"] = pythonExe;
         return next;
       });
     } catch {
       // best-effort
-    }
-  }
-
-  async function doValidateCustomPython() {
-    if (!customPythonPath.trim()) return;
-    setCustomPathStatus(t("config.pyValidating"));
-    try {
-      const cand = await invoke<PythonCandidate>("validate_python_path", { path: customPythonPath.trim() });
-      setPythonCandidates((prev) => {
-        const cmd = cand.command.join(" ");
-        return [cand, ...prev.filter((p) => p.command.join(" ") !== cmd)];
-      });
-      setSelectedPythonIdx(0);
-      setCustomPathStatus(t("config.pyValidateOk") + `: ${cand.versionText}`);
-    } catch (e) {
-      setCustomPathStatus(t("config.pyValidateFail") + `: ${String(e)}`);
-    }
-  }
-
-  async function doValidateCustomVenv() {
-    if (!customVenvPath.trim()) return;
-    setCustomVenvStatus(t("config.pyValidating"));
-    try {
-      const cand = await invoke<PythonCandidate>("validate_venv_path", { path: customVenvPath.trim() });
-      setPythonCandidates((prev) => {
-        const cmd = cand.command.join(" ");
-        return [cand, ...prev.filter((p) => p.command.join(" ") !== cmd)];
-      });
-      setSelectedPythonIdx(0);
-      setCustomVenvStatus(t("config.pyVenvValidateOk") + `: ${cand.versionText}`);
-    } catch (e) {
-      setCustomVenvStatus(t("config.pyVenvValidateFail") + `: ${String(e)}`);
-    }
-  }
-
-  async function doUseCustomVenvAsActive() {
-    if (!customVenvPath.trim()) return;
-    setBusy(t("config.pyValidating"));
-    try {
-      const cand = await invoke<PythonCandidate>("validate_venv_path", { path: customVenvPath.trim() });
-      if (!cand.isUsable) {
-        setError(t("config.pyVenvValidateFail"));
-        return;
-      }
-      await persistPythonEnvConfig(customVenvPath.trim(), cand.command[0]);
-      setVenvStatus(t("config.pyVenvReady") + `: ${customVenvPath.trim()}`);
-      setVenvReady(true);
-      setPythonCandidates((prev) => {
-        const cmd = cand.command.join(" ");
-        return [cand, ...prev.filter((p) => p.command.join(" ") !== cmd)];
-      });
-      setSelectedPythonIdx(0);
-      setNotice(t("config.pyVenvReady"));
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(null);
     }
   }
 
@@ -6742,7 +6676,7 @@ export function App() {
               <div className="cardHint" style={{ marginBottom: 8 }}>{t("adv.pythonHint")}</div>
               {pyDiag ? (
                 <>
-                  {diagItem(t("adv.pyEmbedded"), pyDiag.embeddedPythonOk, pyDiag.embeddedPythonPath)}
+                  {diagItem(t("adv.pyEmbedded"), pyDiag.bundledPythonOk, pyDiag.bundledPythonPath)}
                   {diagItem(t("adv.pyVenv"), pyDiag.venvOk, pyDiag.venvPythonVersion ? `${pyDiag.venvPythonVersion} — ${pyDiag.venvPath}` : pyDiag.venvPath)}
                   {diagItem(t("adv.pyOpenakita"), pyDiag.openakitaInstalled, pyDiag.openakitaVersion)}
                   {pyDiag.issues.length > 0 && (
@@ -7623,17 +7557,17 @@ export function App() {
           updateTask("python-check", { status: "done", detail: pyCheck });
           logTask("检查 Python 环境", "done", pyCheck);
         } catch {
-          log("未找到 Python 环境，正在安装嵌入式 Python...");
-          updateTask("python-check", { detail: "正在安装嵌入式 Python..." });
-          logTask("检查 Python 环境", "running", "正在安装嵌入式 Python...");
+          log("未找到 Python 环境，正在检查内置 Python...");
+          updateTask("python-check", { detail: "正在检查内置 Python..." });
+          logTask("检查 Python 环境", "running", "正在检查内置 Python...");
             try {
-            await invoke("install_embedded_python", { pythonSeries: "3.11", logPath: obLogPath ?? null });
-            log("✓ 嵌入式 Python 安装完成");
+            await invoke("install_bundled_python", { pythonSeries: "3.11", logPath: obLogPath ?? null });
+            log("✓ 内置 Python 可用");
             pyReady = true;
-            updateTask("python-check", { status: "done", detail: "嵌入式 Python" });
-            logTask("检查 Python 环境", "done", "嵌入式 Python");
+            updateTask("python-check", { status: "done", detail: "内置 Python" });
+            logTask("检查 Python 环境", "done", "内置 Python");
           } catch (pyErr) {
-            log(`⚠ 嵌入式 Python 安装失败: ${String(pyErr)}`);
+            log(`⚠ 内置 Python 不可用: ${String(pyErr)}`);
             updateTask("python-check", { status: "error", detail: String(pyErr) });
             logTask("检查 Python 环境", "error", String(pyErr));
             hasErr = true;

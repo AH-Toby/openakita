@@ -31,6 +31,41 @@ def run_cmd(cmd: list[str], env: dict | None = None, **kwargs) -> subprocess.Com
     return result
 
 
+def verify_bundled_python_contract(output_dir: Path) -> None:
+    """Verify Contract A: onedir backend must include _internal/python* with pip."""
+    internal_dir = output_dir / "_internal"
+    if sys.platform == "win32":
+        candidates = [internal_dir / "python.exe"]
+    else:
+        candidates = [internal_dir / "python3", internal_dir / "python"]
+
+    py_path = next((p for p in candidates if p.exists()), None)
+    if py_path is None:
+        expected = ", ".join(str(p) for p in candidates)
+        print(f"  [ERROR] Bundled Python missing. Expected one of: {expected}")
+        sys.exit(1)
+
+    print(f"  [OK] Bundled Python found: {py_path}")
+    try:
+        result = subprocess.run(
+            [str(py_path), "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception as exc:
+        print(f"  [ERROR] Failed to run bundled Python pip check: {exc}")
+        sys.exit(1)
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        print(f"  [ERROR] Bundled Python pip check failed (exit {result.returncode})")
+        if stderr:
+            print(f"    stderr: {stderr[:500]}")
+        sys.exit(1)
+    print("  [OK] Bundled Python pip check passed")
+
+
 def check_pyinstaller():
     """Check if PyInstaller is installed"""
     try:
@@ -134,22 +169,6 @@ def build_backend(mode: str):
 
     print("\n[5/5] Verifying build output...")
     
-    # On macOS with onefile mode, PyInstaller outputs directly to dist/openakita-server (file)
-    # We need to move it to dist/openakita-server/openakita-server (expected directory structure)
-    if sys.platform == "darwin":
-        onefile_exe = DIST_DIR / "openakita-server"
-        if onefile_exe.is_file():
-            print(f"  [macOS] Moving onefile executable to directory structure...")
-            # First, rename the file to a temp name
-            temp_exe = DIST_DIR / "openakita-server.tmp"
-            shutil.move(str(onefile_exe), str(temp_exe))
-            # Now create the expected directory
-            OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            # Move the executable into the directory with original name
-            target_exe = OUTPUT_DIR / "openakita-server"
-            shutil.move(str(temp_exe), str(target_exe))
-            print(f"  [macOS] Moved to: {target_exe}")
-    
     if sys.platform == "win32":
         exe_path = OUTPUT_DIR / "openakita-server.exe"
     else:
@@ -176,6 +195,8 @@ def build_backend(mode: str):
         print("  [WARN] Executable timed out (may be normal, continuing)")
     except Exception as e:
         print(f"  [WARN] Exception during verification: {e}")
+
+    verify_bundled_python_contract(OUTPUT_DIR)
 
     # Calculate size
     total_size = sum(f.stat().st_size for f in OUTPUT_DIR.rglob("*") if f.is_file())

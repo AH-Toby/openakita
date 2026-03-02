@@ -471,8 +471,8 @@ class TestMirrorConsistency:
         # pypi.org 作为兜底
         assert "pypi.org/simple" in content
 
-    def test_embedded_python_uses_connect_timeout(self):
-        """嵌入式 Python 下载应设置连接超时"""
+    def test_bundled_python_contract_in_main_rs(self):
+        """契约A：运行时应使用打包内置 Python（不走运行时下载）"""
         main_rs_path = (
             Path(__file__).parent.parent
             / "apps"
@@ -486,9 +486,20 @@ class TestMirrorConsistency:
 
         content = main_rs_path.read_text(encoding="utf-8")
 
-        # install_embedded_python_sync 中应有 connect_timeout
-        assert "connect_timeout" in content, (
-            "嵌入式 Python 下载的 HTTP 客户端应设置 connect_timeout"
+        assert "install_bundled_python_sync" in content, (
+            "应存在 install_bundled_python_sync 作为内置 Python 校验入口"
+        )
+        assert "install_bundled_python" in content, (
+            "应暴露 install_bundled_python 命令供前端调用"
+        )
+        assert 'bundled.join("_internal").join("python.exe")' in content, (
+            "Windows 应从 _internal/python.exe 探测内置 Python"
+        )
+        assert 'bundled.join("_internal").join("python3")' in content, (
+            "Unix 应优先从 _internal/python3 探测内置 Python"
+        )
+        assert 'bundled.join("_internal").join("python")' in content, (
+            "Unix 应兼容 _internal/python 命名差异"
         )
 
     def test_fetch_pypi_versions_has_fallback(self):

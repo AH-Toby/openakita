@@ -57,7 +57,7 @@ export type PythonCandidate = {
   isUsable: boolean;
 };
 
-export type EmbeddedPythonInstallResult = {
+export type BundledPythonInstallResult = {
   pythonCommand: string[];
   pythonPath: string;
   installDir: string;

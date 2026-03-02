@@ -276,6 +276,9 @@ jobs:
           echo "Resources copied:"
           du -sh "$RESOURCE_DIR"/*
 
+      - name: Verify bundled Python contract
+        run: python build/verify_bundled_python_contract.py --backend-dir apps/setup-center/src-tauri/resources/openakita-server
+
       - name: Codesign embedded binaries for macOS notarization
         if: runner.os == 'macOS'
         env:
