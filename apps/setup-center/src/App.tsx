@@ -6758,11 +6758,12 @@ export function App() {
                       </button>
                     </div>
                     <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
-                      <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer", opacity: 0.8 }}>
+                      <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, cursor: "pointer", opacity: 0.8, whiteSpace: "nowrap" }}>
                         <input
                           type="checkbox"
                           checked={obCustomRootMigrate}
                           onChange={(e) => setObCustomRootMigrate(e.target.checked)}
+                          style={{ width: 16, height: 16, flexShrink: 0, accentColor: "var(--brand)" }}
                         />
                         {t("onboarding.welcome.customRootMigrate")}
                       </label>
