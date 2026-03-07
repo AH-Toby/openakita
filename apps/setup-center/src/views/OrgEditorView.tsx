@@ -81,6 +81,7 @@ interface OrgNodeData {
   can_request_scaling: boolean;
   is_clone: boolean;
   clone_source: string | null;
+  external_tools: string[];
   ephemeral: boolean;
   frozen_by: string | null;
   frozen_reason: string | null;
@@ -467,7 +468,7 @@ export function OrgEditorView({
   const [saving, setSaving] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showNewNodeForm, setShowNewNodeForm] = useState(false);
-  const [propsTab, setPropsTab] = useState<"basic" | "identity" | "mcp" | "advanced" | "live">("basic");
+  const [propsTab, setPropsTab] = useState<"basic" | "identity" | "tools" | "mcp" | "advanced" | "live">("basic");
   const [fullPromptPreview, setFullPromptPreview] = useState<string | null>(null);
   const [promptPreviewLoading, setPromptPreviewLoading] = useState(false);
   const [liveMode, setLiveMode] = useState(false);
@@ -742,6 +743,7 @@ export function OrgEditorView({
       can_request_scaling: true,
       is_clone: false,
       clone_source: null,
+      external_tools: [],
       ephemeral: false,
       frozen_by: null,
       frozen_reason: null,
@@ -1293,8 +1295,8 @@ export function OrgEditorView({
           {/* Tabs */}
           <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
             {(liveMode
-              ? (["live", "basic", "identity", "mcp", "advanced"] as const)
-              : (["basic", "identity", "mcp", "advanced"] as const)
+              ? (["live", "basic", "identity", "tools", "mcp", "advanced"] as const)
+              : (["basic", "identity", "tools", "mcp", "advanced"] as const)
             ).map((tab) => (
               <button
                 key={tab}
@@ -1313,7 +1315,7 @@ export function OrgEditorView({
                   cursor: "pointer",
                 }}
               >
-                {tab === "live" ? "实况" : tab === "basic" ? "基本" : tab === "identity" ? "身份" : tab === "mcp" ? "MCP" : "高级"}
+                {tab === "live" ? "实况" : tab === "basic" ? "基本" : tab === "identity" ? "身份" : tab === "tools" ? "工具" : tab === "mcp" ? "MCP" : "高级"}
               </button>
             ))}
           </div>
@@ -1664,6 +1666,89 @@ export function OrgEditorView({
                     </div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {propsTab === "tools" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 6 }}>
+                    外部执行工具
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 8 }}>
+                    选择该节点可使用的外部工具类目。未选择时只能使用 org_* 组织协作工具。
+                  </div>
+                  <div style={{
+                    border: "1px solid var(--line)", borderRadius: 8, padding: 4,
+                  }}>
+                    {[
+                      { key: "research", label: "信息搜索", desc: "web_search, news_search" },
+                      { key: "planning", label: "计划管理", desc: "create_plan, update_plan_step, ..." },
+                      { key: "filesystem", label: "文件与命令", desc: "read_file, write_file, run_shell, ..." },
+                      { key: "memory", label: "记忆管理", desc: "add_memory, search_memory" },
+                      { key: "mcp", label: "MCP 工具", desc: "call_mcp_tool, list_mcp_servers" },
+                      { key: "browser", label: "浏览器", desc: "browser_task, browser_open, ..." },
+                      { key: "communication", label: "通信投递", desc: "deliver_artifacts, get_chat_history" },
+                    ].map((cat) => {
+                      const checked = (selectedNode.external_tools || []).includes(cat.key);
+                      return (
+                        <label
+                          key={cat.key}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 8,
+                            padding: "6px 8px", borderRadius: 6, cursor: "pointer",
+                            fontSize: 12,
+                            background: checked ? "rgba(14,165,233,0.08)" : "transparent",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => {
+                              const cur = selectedNode.external_tools || [];
+                              const next = checked
+                                ? cur.filter((s: string) => s !== cat.key)
+                                : [...cur, cat.key];
+                              updateNodeData("external_tools", next);
+                            }}
+                            style={{ accentColor: "var(--primary)", flexShrink: 0 }}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <div>{cat.label}</div>
+                            <div style={{ fontSize: 9, color: "var(--muted)" }}>{cat.desc}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {(selectedNode.external_tools || []).length > 0 && (
+                    <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                      已启用 {selectedNode.external_tools.length} 个类目
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  className="btnSmall"
+                  style={{ fontSize: 11, alignSelf: "flex-start" }}
+                  onClick={() => {
+                    const title = (selectedNode.role_title || "").toLowerCase();
+                    let preset: string[] = ["research", "memory"];
+                    if (title.includes("ceo") || title.includes("执行官")) preset = ["research", "planning", "memory"];
+                    else if (title.includes("cto") || title.includes("技术总监")) preset = ["research", "planning", "filesystem", "memory"];
+                    else if (title.includes("cmo") || title.includes("市场")) preset = ["research", "planning", "memory"];
+                    else if (title.includes("cpo") || title.includes("产品总监")) preset = ["research", "planning", "memory"];
+                    else if (title.includes("工程师") || title.includes("开发") || title.includes("dev")) preset = ["filesystem", "memory"];
+                    else if (title.includes("运营") || title.includes("content")) preset = ["research", "filesystem", "memory"];
+                    else if (title.includes("设计") || title.includes("design")) preset = ["browser", "filesystem"];
+                    else if (title.includes("产品经理") || title.includes("pm")) preset = ["research", "planning", "memory"];
+                    else if (title.includes("seo")) preset = ["research", "memory"];
+                    else if (title.includes("devops")) preset = ["filesystem", "memory"];
+                    updateNodeData("external_tools", preset);
+                  }}
+                >
+                  按角色推荐
+                </button>
               </div>
             )}
 

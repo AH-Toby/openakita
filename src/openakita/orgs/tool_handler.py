@@ -882,3 +882,150 @@ class OrgToolHandler:
             {"filename": args["filename"], "title": args["title"]},
         )
         return f"制度提议「{args['title']}」已提交审批。"
+
+    # ------------------------------------------------------------------
+    # Tool request / grant / revoke
+    # ------------------------------------------------------------------
+
+    async def _handle_org_request_tools(
+        self, args: dict, org_id: str, node_id: str
+    ) -> str:
+        org = self._runtime.get_org(org_id)
+        if not org:
+            return "组织未找到"
+        parent = org.get_parent(node_id)
+        if not parent:
+            return "你是最高级节点，无法向上级申请。请直接配置 external_tools。"
+
+        tools = args.get("tools", [])
+        reason = args.get("reason", "")
+
+        messenger = self._runtime.get_messenger(org_id)
+        if not messenger:
+            return "消息系统未就绪"
+
+        from .tool_categories import TOOL_CATEGORIES
+        tool_desc = ", ".join(tools)
+        cat_details = []
+        for t in tools:
+            if t in TOOL_CATEGORIES:
+                cat_details.append(f"{t}({', '.join(TOOL_CATEGORIES[t])})")
+            else:
+                cat_details.append(t)
+
+        content = (
+            f"[工具申请] {node_id} 申请增加外部工具：{', '.join(cat_details)}\n"
+            f"申请原因：{reason}\n\n"
+            f"如果批准，请使用 org_grant_tools(node_id=\"{node_id}\", tools={tools}) 授权。"
+        )
+
+        msg = OrgMessage(
+            from_node=node_id,
+            to_node=parent.id,
+            msg_type=MsgType.QUESTION,
+            content=content,
+            metadata={"_tool_request": True, "requested_tools": tools},
+        )
+        await messenger.send(msg)
+
+        self._runtime.get_event_store(org_id).emit(
+            "tools_requested", node_id,
+            {"tools": tools, "reason": reason, "superior": parent.id},
+        )
+        return f"工具申请已发送给 {parent.role_title}（{parent.id}），等待审批。"
+
+    async def _handle_org_grant_tools(
+        self, args: dict, org_id: str, node_id: str
+    ) -> str:
+        org = self._runtime.get_org(org_id)
+        if not org:
+            return "组织未找到"
+
+        target_id = args.get("node_id", "")
+        tools = args.get("tools", [])
+        if not target_id or not tools:
+            return "参数不完整：需要 node_id 和 tools"
+
+        target = org.get_node(target_id)
+        if not target:
+            return f"节点未找到: {target_id}"
+
+        children = org.get_children(node_id)
+        child_ids = {c.id for c in children}
+        if target_id not in child_ids:
+            return f"{target_id} 不是你的直属下级，无法授权。"
+
+        existing = set(target.external_tools)
+        for t in tools:
+            if t not in existing:
+                target.external_tools.append(t)
+
+        self._runtime._save_org(org)
+        self._runtime.evict_node_agent(org_id, target_id)
+
+        messenger = self._runtime.get_messenger(org_id)
+        if messenger:
+            notify = OrgMessage(
+                from_node=node_id,
+                to_node=target_id,
+                msg_type=MsgType.FEEDBACK,
+                content=f"你的工具权限已更新，新增：{', '.join(tools)}。下次激活时生效。",
+                metadata={"_tool_grant": True, "granted_tools": tools},
+            )
+            await messenger.send(notify)
+
+        self._runtime.get_event_store(org_id).emit(
+            "tools_granted", node_id,
+            {"target": target_id, "tools": tools},
+        )
+        return f"已授权 {target.role_title}（{target_id}）使用：{', '.join(tools)}"
+
+    async def _handle_org_revoke_tools(
+        self, args: dict, org_id: str, node_id: str
+    ) -> str:
+        org = self._runtime.get_org(org_id)
+        if not org:
+            return "组织未找到"
+
+        target_id = args.get("node_id", "")
+        tools = args.get("tools", [])
+        if not target_id or not tools:
+            return "参数不完整：需要 node_id 和 tools"
+
+        target = org.get_node(target_id)
+        if not target:
+            return f"节点未找到: {target_id}"
+
+        children = org.get_children(node_id)
+        child_ids = {c.id for c in children}
+        if target_id not in child_ids:
+            return f"{target_id} 不是你的直属下级，无法操作。"
+
+        removed = []
+        for t in tools:
+            if t in target.external_tools:
+                target.external_tools.remove(t)
+                removed.append(t)
+
+        if not removed:
+            return f"{target.role_title} 没有这些工具可收回。"
+
+        self._runtime._save_org(org)
+        self._runtime.evict_node_agent(org_id, target_id)
+
+        messenger = self._runtime.get_messenger(org_id)
+        if messenger:
+            notify = OrgMessage(
+                from_node=node_id,
+                to_node=target_id,
+                msg_type=MsgType.FEEDBACK,
+                content=f"你的部分工具权限已收回：{', '.join(removed)}。下次激活时生效。",
+                metadata={"_tool_revoke": True, "revoked_tools": removed},
+            )
+            await messenger.send(notify)
+
+        self._runtime.get_event_store(org_id).emit(
+            "tools_revoked", node_id,
+            {"target": target_id, "tools": removed},
+        )
+        return f"已收回 {target.role_title}（{target_id}）的工具：{', '.join(removed)}"

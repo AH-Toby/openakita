@@ -138,22 +138,47 @@ class OrgIdentity:
         if policy_index:
             parts.append(f"制度索引：\n{policy_index}")
 
-        parts.append(
-            "## 组织工具与行为约束\n"
-            "你**只能**使用 org_* 系列工具。不要调用 create_plan、write_file、read_file、"
-            "run_shell、call_mcp_tool 等非组织工具，它们不可用。\n"
-            "协作规则：\n"
-            "- 优先通过直接连线关系沟通（上下级、协作伙伴）\n"
-            "- 非必要不跨级沟通\n"
-            "- 重要决策和方案写入 org_write_blackboard，写之前先 org_read_blackboard 检查避免重复\n"
-            "- 回复要简洁，1-3 句话概括行动和结果即可\n\n"
-            "任务交付流程：\n"
-            "1. 收到任务（org_delegate_task）后开始工作\n"
-            "2. 完成后用 **org_submit_deliverable** 提交交付物给委派人\n"
-            "3. 委派人用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）验收\n"
-            "4. 被打回时根据反馈修改后重新提交\n"
-            "5. 验收通过后任务完结"
-        )
+        has_external = bool(node.external_tools)
+        if has_external:
+            from .tool_categories import expand_tool_categories, TOOL_CATEGORIES
+            ext_names = expand_tool_categories(node.external_tools)
+            cat_labels = [c for c in node.external_tools if c in TOOL_CATEGORIES]
+            ext_desc = "、".join(cat_labels) if cat_labels else "、".join(sorted(ext_names)[:5])
+            parts.append(
+                "## 组织工具与行为约束\n"
+                f"你拥有 org_* 组织协作工具和外部执行工具（{ext_desc}）。\n"
+                "协作规则：\n"
+                "- 与同事沟通、委派、汇报用 org_* 工具；搜索、写文件、制定计划等实际执行用外部工具\n"
+                "- 外部工具得到的重要结果，用 org_write_blackboard 写入黑板共享给同事\n"
+                "- 优先通过直接连线关系沟通（上下级、协作伙伴）\n"
+                "- 非必要不跨级沟通\n"
+                "- 回复要简洁，1-3 句话概括行动和结果即可\n\n"
+                "任务交付流程：\n"
+                "1. 收到任务（org_delegate_task）后开始工作\n"
+                "2. 完成后用 **org_submit_deliverable** 提交交付物给委派人\n"
+                "3. 委派人用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）验收\n"
+                "4. 被打回时根据反馈修改后重新提交\n"
+                "5. 验收通过后任务完结\n\n"
+                "缺少工具时，用 org_request_tools 向上级申请。"
+            )
+        else:
+            parts.append(
+                "## 组织工具与行为约束\n"
+                "你**只能**使用 org_* 系列工具。不要调用 create_plan、write_file、read_file、"
+                "run_shell、call_mcp_tool 等非组织工具，它们不可用。\n"
+                "协作规则：\n"
+                "- 优先通过直接连线关系沟通（上下级、协作伙伴）\n"
+                "- 非必要不跨级沟通\n"
+                "- 重要决策和方案写入 org_write_blackboard，写之前先 org_read_blackboard 检查避免重复\n"
+                "- 回复要简洁，1-3 句话概括行动和结果即可\n\n"
+                "任务交付流程：\n"
+                "1. 收到任务（org_delegate_task）后开始工作\n"
+                "2. 完成后用 **org_submit_deliverable** 提交交付物给委派人\n"
+                "3. 委派人用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）验收\n"
+                "4. 被打回时根据反馈修改后重新提交\n"
+                "5. 验收通过后任务完结\n\n"
+                "缺少工具时，用 org_request_tools 向上级申请。"
+            )
 
         if blackboard_summary:
             parts.append(f"## 当前组织简报\n{blackboard_summary}")

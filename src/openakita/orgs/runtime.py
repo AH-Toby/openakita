@@ -443,7 +443,10 @@ class OrgRuntime:
 
         agent = await factory.create(profile)
 
+        from .tool_categories import expand_tool_categories
+
         _KEEP = frozenset({"get_tool_info"})
+        allowed_external = expand_tool_categories(node.external_tools)
 
         if hasattr(agent, "tool_catalog"):
             for tool_def in ORG_NODE_TOOLS:
@@ -451,6 +454,7 @@ class OrgRuntime:
             non_org = [
                 n for n in agent.tool_catalog.list_tools()
                 if not n.startswith("org_") and n not in _KEEP
+                and n not in allowed_external
             ]
             for n in non_org:
                 agent.tool_catalog.remove_tool(n)
@@ -460,7 +464,8 @@ class OrgRuntime:
             filtered: list[dict] = []
             for t in agent._tools:
                 name = t.get("name", "")
-                if (name.startswith("org_") or name in _KEEP) and name not in seen:
+                if (name.startswith("org_") or name in _KEEP
+                        or name in allowed_external) and name not in seen:
                     seen.add(name)
                     filtered.append(t)
             for t in ORG_NODE_TOOLS:
@@ -469,6 +474,9 @@ class OrgRuntime:
                     seen.add(name)
                     filtered.append(t)
             agent._tools = filtered
+
+        if node.mcp_servers and "mcp" in (node.external_tools or []):
+            self._connect_node_mcp_servers(agent, node.mcp_servers)
 
         self._override_system_prompt_for_org(agent, org_context_prompt)
 
@@ -485,7 +493,9 @@ class OrgRuntime:
     @staticmethod
     def _override_system_prompt_for_org(agent: Any, org_context: str) -> None:
         """Replace the agent's bloated system prompt with an org-focused one."""
-        tool_lines: list[str] = []
+        org_tool_lines: list[str] = []
+        ext_tool_lines: list[str] = []
+
         for t in getattr(agent, "_tools", []):
             name = t.get("name", "")
             desc = t.get("description", "")
@@ -496,27 +506,52 @@ class OrgRuntime:
                 f"{p}" + (" *" if p in required else "")
                 for p in props
             )
-            tool_lines.append(f"- **{name}**({params}): {desc}")
+            line = f"- **{name}**({params}): {desc}"
+            if name.startswith("org_") or name == "get_tool_info":
+                org_tool_lines.append(line)
+            else:
+                ext_tool_lines.append(line)
 
-        tools_section = "\n".join(tool_lines) if tool_lines else "(无可用工具)"
+        org_section = "\n".join(org_tool_lines) if org_tool_lines else "(无)"
+        has_external = bool(ext_tool_lines)
 
-        lean_prompt = f"""{org_context}
+        parts = [org_context]
 
-## 可用工具（仅限 org_* 系列）
+        parts.append(f"## 组织协作工具（org_*）\n\n{org_section}")
 
-{tools_section}
+        if has_external:
+            ext_section = "\n".join(ext_tool_lines)
+            parts.append(f"## 外部执行工具\n\n{ext_section}")
 
-参数带 * 为必填。调用方式：直接使用工具名，如 org_send_message(to_node="cto", content="...")。
-用 get_tool_info(tool_name) 可查看工具完整参数。
+        parts.append(
+            "参数带 * 为必填。用 get_tool_info(tool_name) 可查看工具完整参数。"
+        )
 
-## 行为准则
+        if has_external:
+            parts.append(
+                "## 行为准则\n\n"
+                "1. **协作用 org_* 工具，执行用外部工具**。与同事沟通、委派、汇报用 org_* 工具；"
+                "搜索信息、写文件、制定计划等实际执行工作用外部工具。\n"
+                "2. **执行结果要共享**。用外部工具得到的重要结果，用 org_write_blackboard 写入黑板，方便同事查阅。\n"
+                "3. **简洁回复**。完成工具调用后，用 1-2 句话总结结果即可。\n"
+                "4. **先查再做**。不确定找谁时用 org_find_colleague；不确定流程时用 org_search_policy。\n"
+                "5. **不要重复写入**。写黑板前先用 org_read_blackboard 检查是否已有相似内容。\n"
+                "6. **任务交付流程**。收到任务后完成工作，用 org_submit_deliverable 提交给委派人验收。被打回时修改后重新提交。\n"
+                "7. **缺少工具时申请**。如果任务需要你没有的工具，用 org_request_tools 向上级申请。"
+            )
+        else:
+            parts.append(
+                "## 行为准则\n\n"
+                "1. **只使用上述 org_* 工具**。不要调用 create_plan、write_file、read_file、run_shell 等非组织工具。\n"
+                "2. **简洁回复**。完成工具调用后，用 1-2 句话总结结果即可。\n"
+                "3. **先查再做**。不确定找谁时用 org_find_colleague；不确定流程时用 org_search_policy。\n"
+                "4. **重要信息写黑板**。决策、方案、进度等用 org_write_blackboard 记录，方便同事查阅。\n"
+                "5. **不要重复写入**。写黑板前先用 org_read_blackboard 检查是否已有相似内容。\n"
+                "6. **任务交付流程**。收到任务后完成工作，用 org_submit_deliverable 提交给委派人验收。被打回时修改后重新提交。\n"
+                "7. **缺少工具时申请**。如果任务需要你没有的工具，用 org_request_tools 向上级申请。"
+            )
 
-1. **只使用上述 org_* 工具**。不要调用 create_plan、write_file、read_file、run_shell、call_mcp_tool 等任何非 org 工具。
-2. **简洁回复**。完成工具调用后，用 1-2 句话总结结果即可，不要长篇大论。
-3. **先查再做**。不确定找谁时用 org_find_colleague；不确定流程时用 org_search_policy。
-4. **重要信息写黑板**。决策、方案、进度等用 org_write_blackboard 记录，方便同事查阅。
-5. **不要重复写入**。写黑板前先用 org_read_blackboard 检查是否已有相似内容。
-6. **任务交付流程**。收到任务后完成工作，用 org_submit_deliverable 提交给委派人验收。被打回时修改后重新提交。"""
+        lean_prompt = "\n\n".join(parts)
 
         ctx = getattr(agent, "_context", None)
         if ctx and hasattr(ctx, "system"):
@@ -881,6 +916,29 @@ class OrgRuntime:
         expired = [k for k, v in self._agent_cache.items() if v.expired]
         for k in expired:
             self._agent_cache.pop(k, None)
+
+    def evict_node_agent(self, org_id: str, node_id: str) -> None:
+        """Evict a specific node's cached agent so it gets rebuilt with fresh config."""
+        cache_key = f"{org_id}:{node_id}"
+        self._agent_cache.pop(cache_key, None)
+
+    @staticmethod
+    def _connect_node_mcp_servers(agent: Any, mcp_servers: list[str]) -> None:
+        """Best-effort connect MCP servers listed on the node."""
+        try:
+            mcp_client = getattr(agent, "_mcp_client", None)
+            if not mcp_client:
+                return
+            for server_name in mcp_servers:
+                if hasattr(mcp_client, "connect_server"):
+                    import asyncio
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(mcp_client.connect_server(server_name))
+                    except RuntimeError:
+                        pass
+        except Exception as e:
+            logger.debug(f"[OrgRuntime] MCP connect for node failed: {e}")
 
     async def _broadcast_ws(self, event: str, data: dict) -> None:
         try:

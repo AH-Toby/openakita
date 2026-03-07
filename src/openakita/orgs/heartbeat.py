@@ -113,15 +113,38 @@ class OrgHeartbeat:
 
         blackboard_summary = bb.get_org_summary() if bb else ""
 
+        root_node = roots[0]
+        has_external = bool(root_node.external_tools)
+
         nl = "\n"
+
+        action_guidance = (
+            "## 请按以下步骤思考和行动\n\n"
+            "1. **回顾**：查看黑板上的当前目标和进展（org_read_blackboard）\n"
+            "2. **评估**：各节点状态是否正常？有无阻塞需要干预？\n"
+            "3. **决策**：是否需要启动新任务、调整优先级、或分配调研工作？\n"
+        )
+        if has_external:
+            action_guidance += (
+                "4. **执行**：使用 org_delegate_task 分配任务给下属，"
+                "或自己使用 create_plan 制定计划、web_search 搜索信息\n"
+            )
+        else:
+            action_guidance += (
+                "4. **执行**：使用 org_delegate_task 分配任务，org_broadcast 发布公告\n"
+            )
+        action_guidance += (
+            "5. **记录**：将决策和下一步行动写入黑板（org_write_blackboard）\n\n"
+            "如果一切正常且无需新行动，简要说明当前状态即可。"
+        )
+
         prompt = (
             f"[心跳检查] 当前时间: {_now_iso()}\n\n"
             f"组织: {org.name}\n"
             f"心跳提示: {org.heartbeat_prompt}\n\n"
             f"## 各节点状态\n{nl.join(node_summaries)}\n\n"
             f"## 组织黑板摘要\n{blackboard_summary}\n\n"
-            f"请审视以上状态。如果需要采取行动（分配任务/调整优先级/发布公告），"
-            f"请使用组织工具执行。如果一切正常，简短说明即可。\n\n"
+            f"{action_guidance}\n\n"
             f"注意：本次心跳级联深度限制为 {org.heartbeat_max_cascade_depth} 层，"
             f"请谨慎控制委派深度。"
         )

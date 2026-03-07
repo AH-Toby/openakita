@@ -374,4 +374,53 @@ ORG_NODE_TOOLS: list[dict] = [
             "required": ["filename", "title", "content", "reason"],
         },
     },
+    # ── 工具申请/授权/收回 ──
+    {
+        "name": "org_request_tools",
+        "description": "向直属上级申请增加外部工具能力（如搜索、文件、计划等）",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "申请的工具类目或具体工具名列表（如 [\"research\", \"planning\"]）",
+                },
+                "reason": {"type": "string", "description": "申请原因，说明为什么需要这些工具"},
+            },
+            "required": ["tools", "reason"],
+        },
+    },
+    {
+        "name": "org_grant_tools",
+        "description": "授权直属下级使用额外的外部工具（仅上级可用）",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "node_id": {"type": "string", "description": "目标下级节点 ID"},
+                "tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "授权的工具类目或具体工具名列表",
+                },
+            },
+            "required": ["node_id", "tools"],
+        },
+    },
+    {
+        "name": "org_revoke_tools",
+        "description": "收回直属下级的外部工具权限（仅上级可用）",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "node_id": {"type": "string", "description": "目标下级节点 ID"},
+                "tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要收回的工具类目或具体工具名列表",
+                },
+            },
+            "required": ["node_id", "tools"],
+        },
+    },
 ]
