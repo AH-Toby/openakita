@@ -42,6 +42,7 @@ from .routes import (
     logs,
     mcp,
     memory,
+    orgs,
     scheduler,
     sessions,
     skills,
@@ -240,6 +241,16 @@ def create_app(
     app.state.orchestrator = orchestrator
     app.state.agent_pool = agent_pool
 
+    # Initialize OrgManager & OrgRuntime
+    from openakita.orgs.manager import OrgManager
+    from openakita.orgs.runtime import OrgRuntime
+    from openakita.orgs.templates import ensure_builtin_templates
+    org_manager = OrgManager(data_dir)
+    ensure_builtin_templates(data_dir / "org_templates")
+    app.state.org_manager = org_manager
+    org_runtime = OrgRuntime(org_manager)
+    app.state.org_runtime = org_runtime
+
     # Mount routes
     app.include_router(auth_routes.router, tags=["认证"])
     app.include_router(agents.router, tags=["智能体"])
@@ -262,6 +273,8 @@ def create_app(
     app.include_router(ws_routes.router, tags=["WebSocket"])
     app.include_router(hub.router, tags=["Hub"])
     app.include_router(identity.router, tags=["身份"])
+    app.include_router(orgs.router, tags=["组织编排"])
+    app.include_router(orgs.inbox_router, tags=["组织消息中心"])
 
     @app.get("/", tags=["系统"])
     async def root():
@@ -304,6 +317,22 @@ def create_app(
             return {"status": "shutting_down"}
         logger.warning("No shutdown_event available, shutdown request ignored")
         return {"status": "error", "message": "shutdown not available in this mode"}
+
+    @app.on_event("startup")
+    async def _startup_org_runtime():
+        if hasattr(app.state, "org_runtime") and app.state.org_runtime:
+            try:
+                await app.state.org_runtime.start()
+            except Exception as e:
+                logger.warning(f"OrgRuntime startup error (non-fatal): {e}")
+
+    @app.on_event("shutdown")
+    async def _shutdown_org_runtime():
+        if hasattr(app.state, "org_runtime") and app.state.org_runtime:
+            try:
+                await app.state.org_runtime.shutdown()
+            except Exception as e:
+                logger.warning(f"OrgRuntime shutdown error: {e}")
 
     return app
 

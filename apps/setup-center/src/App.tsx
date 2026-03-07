@@ -15,6 +15,7 @@ import { MemoryView } from "./views/MemoryView";
 import { IdentityView } from "./views/IdentityView";
 import { AgentDashboardView } from "./views/AgentDashboardView";
 import { AgentManagerView } from "./views/AgentManagerView";
+import { OrgEditorView } from "./views/OrgEditorView";
 import { FeedbackModal } from "./views/FeedbackModal";
 import { IMConfigView } from "./views/IMConfigView";
 import { AgentSystemView } from "./views/AgentSystemView";
@@ -228,7 +229,11 @@ export function App() {
     [t],
   );
 
-  const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "identity" | "dashboard" | "agent_manager" | "agent_store" | "skill_store">((IS_WEB || IS_CAPACITOR) ? "chat" : "wizard");
+  const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "identity" | "dashboard" | "org_editor" | "agent_manager" | "agent_store" | "skill_store">(() => {
+    const hash = window.location.hash;
+    if (hash === "#/org-editor") return "org_editor";
+    return (IS_WEB || IS_CAPACITOR) ? "chat" : "wizard";
+  });
   const [appInitializing, setAppInitializing] = useState(!(IS_WEB || IS_CAPACITOR));
   const [configExpanded, setConfigExpanded] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -7428,6 +7433,14 @@ export function App() {
         />
       );
     }
+    if (view === "org_editor") {
+      return (
+        <OrgEditorView
+          apiBaseUrl={apiBaseUrl}
+          visible={view === "org_editor"}
+        />
+      );
+    }
     if (view === "agent_manager") {
       return (
         <AgentManagerView
@@ -7727,7 +7740,15 @@ export function App() {
         collapsed={isMobile ? false : sidebarCollapsed}
         onToggleCollapsed={() => { if (!isMobile) setSidebarCollapsed((v) => !v); }}
         view={view}
-        onViewChange={(v) => { setView(v); setMobileSidebarOpen(false); }}
+        onViewChange={(v) => {
+          setView(v);
+          setMobileSidebarOpen(false);
+          if (v === "org_editor") {
+            window.location.hash = "#/org-editor";
+          } else if (window.location.hash === "#/org-editor") {
+            window.location.hash = "";
+          }
+        }}
         mobileOpen={mobileSidebarOpen}
         configExpanded={configExpanded}
         onToggleConfig={() => {

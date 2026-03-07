@@ -38,6 +38,7 @@ import {
   IconImage, IconRefresh, IconClipboard, IconTrash, IconZap,
   IconMask, IconBot, IconUsers, IconHelp, IconEdit, IconDownload,
   IconPin, IconSearch, IconCircleDot, IconXCircle,
+  IconBuilding,
   getFileTypeIcon,
 } from "../icons";
 
@@ -1102,6 +1103,7 @@ function SlashCommandPanel({
              cmd.id === "persona" ? <IconMask size={16} /> :
              cmd.id === "agent" ? <IconBot size={16} /> :
              cmd.id === "agents" ? <IconUsers size={16} /> :
+             cmd.id === "org" ? <IconUsers size={16} /> :
              cmd.id === "help" ? <IconHelp size={16} /> :
              <span style={{ fontSize: 14 }}>/</span>}
           </span>
@@ -1820,6 +1822,25 @@ export function ChatView({
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const agentMenuRef = useRef<HTMLDivElement | null>(null);
 
+  // ── Org mode state ──
+  const [orgMode, setOrgMode] = useState(false);
+  const [orgList, setOrgList] = useState<{id: string; name: string; icon: string; status: string}[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState<string | null>(null);
+  const [selectedOrgNodeId, setSelectedOrgNodeId] = useState<string | null>(null);
+  const [orgMenuOpen, setOrgMenuOpen] = useState(false);
+  const orgMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!orgMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (orgMenuRef.current && !orgMenuRef.current.contains(e.target as HTMLElement)) {
+        setOrgMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [orgMenuOpen]);
+
   type SubAgentEntry = { agentId: string; status: "delegating" | "done" | "error"; reason?: string; startTime: number };
   const [displayActiveSubAgents, setDisplayActiveSubAgents] = useState<SubAgentEntry[]>([]);
 
@@ -2130,6 +2151,18 @@ export function ChatView({
       }
     };
     fetchProfiles();
+  }, [multiAgentEnabled, apiBaseUrl, serviceRunning, visible]);
+
+  useEffect(() => {
+    if (!multiAgentEnabled || !visible || !serviceRunning) return;
+    const fetchOrgs = async () => {
+      try {
+        const res = await safeFetch(`${apiBaseUrl}/api/orgs`);
+        const data = await res.json();
+        setOrgList(data.map((o: any) => ({ id: o.id, name: o.name, icon: o.icon || "", status: o.status })));
+      } catch { /* ignore */ }
+    };
+    fetchOrgs();
   }, [multiAgentEnabled, apiBaseUrl, serviceRunning, visible]);
 
   // Sync selectedAgent → current conversation's agentProfileId
@@ -2454,6 +2487,25 @@ export function ChatView({
     { id: "agents", label: "查看 Agent 列表", description: "显示可用的 Agent 列表", action: () => {
       setMessages((prev) => [...prev, { id: genId(), role: "system", content: "Agent 列表取决于 handoff 配置。当前可通过 /agent <名称> 手动请求切换。", timestamp: Date.now() }]);
     }},
+    { id: "org", label: "组织模式", description: "切换到组织编排模式，向组织下命令", action: (args) => {
+      if (args === "off" || args === "关闭") {
+        setOrgMode(false);
+        setSelectedOrgId(null);
+        setMessages((prev) => [...prev, { id: genId(), role: "system", content: "已退出组织模式", timestamp: Date.now() }]);
+      } else if (args) {
+        const match = orgList.find(o => o.name.includes(args) || o.id === args);
+        if (match) {
+          setOrgMode(true);
+          setSelectedOrgId(match.id);
+          setMessages((prev) => [...prev, { id: genId(), role: "system", content: `已切换到组织: ${match.icon} ${match.name}`, timestamp: Date.now() }]);
+        } else {
+          setMessages((prev) => [...prev, { id: genId(), role: "system", content: `未找到组织「${args}」。可用组织: ${orgList.map(o => o.name).join(", ") || "无"}`, timestamp: Date.now() }]);
+        }
+      } else {
+        const names = orgList.map(o => `${o.icon} ${o.name}`).join("\n") || "（暂无组织）";
+        setMessages((prev) => [...prev, { id: genId(), role: "system", content: `组织模式 ${orgMode ? "已开启" : "已关闭"}\n可用组织:\n${names}\n\n用法: /org <组织名> 或 /org off`, timestamp: Date.now() }]);
+      }
+    }},
     { id: "thinking", label: "深度思考", description: "设置思考模式 (on/off/auto)", action: (args) => {
       const mode = args?.toLowerCase().trim();
       if (mode === "on" || mode === "off" || mode === "auto") {
@@ -2599,6 +2651,48 @@ export function ChatView({
         cmd.action(parts.slice(1).join(" "));
         setInputText("");
         setSlashOpen(false);
+        return;
+      }
+    }
+
+    // @org: 前缀或组织模式 — 路由到组织 API
+    const orgPrefixMatch = text.match(/^@org:(\S+?)(?:\/(\S+?))?\s+([\s\S]+)/);
+    if (orgPrefixMatch || (orgMode && selectedOrgId)) {
+      let targetOrgId = selectedOrgId;
+      let targetNodeId = selectedOrgNodeId;
+      let msgContent = text;
+      if (orgPrefixMatch) {
+        const orgRef = orgPrefixMatch[1];
+        targetNodeId = orgPrefixMatch[2] || null;
+        msgContent = orgPrefixMatch[3];
+        const match = orgList.find(o => o.name.includes(orgRef) || o.id === orgRef);
+        if (match) targetOrgId = match.id;
+      }
+      if (targetOrgId) {
+        const orgUserMsg: ChatMessage = { id: genId(), role: "user", content: text, timestamp: Date.now() };
+        setMessages((prev) => [...prev, orgUserMsg]);
+        setInputText("");
+        try {
+          const res = await safeFetch(`${apiBaseUrl}/api/orgs/${targetOrgId}/command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: msgContent, target_node_id: targetNodeId }),
+          });
+          const data = await res.json();
+          const resultText = data.result || data.error || JSON.stringify(data);
+          const orgOrgName = orgList.find(o => o.id === targetOrgId)?.name || targetOrgId;
+          setMessages((prev) => [...prev, {
+            id: genId(), role: "assistant",
+            content: `**[${orgOrgName}]** ${resultText}`,
+            timestamp: Date.now(),
+          }]);
+        } catch (e: any) {
+          setMessages((prev) => [...prev, {
+            id: genId(), role: "system",
+            content: `组织命令失败: ${e.message || e}`,
+            timestamp: Date.now(),
+          }]);
+        }
         return;
       }
     }
@@ -3792,6 +3886,17 @@ export function ChatView({
     const val = e.target.value;
     setInputText(val);
 
+    // @org: 前缀检测 — 自动切换到组织模式
+    const orgMatch = val.match(/^@org:(\S+)\s/);
+    if (orgMatch && !orgMode) {
+      const target = orgMatch[1];
+      const match = orgList.find(o => o.name.includes(target) || o.id === target);
+      if (match) {
+        setOrgMode(true);
+        setSelectedOrgId(match.id);
+      }
+    }
+
     // 斜杠命令检测
     if (val.startsWith("/") && !val.includes(" ")) {
       setSlashOpen(true);
@@ -3800,7 +3905,7 @@ export function ChatView({
     } else {
       setSlashOpen(false);
     }
-  }, []);
+  }, [orgMode, orgList]);
 
   // ── Filtered + grouped conversations for Cursor-style sidebar ──
   const filteredConversations = useMemo(() => {
@@ -4302,6 +4407,55 @@ export function ChatView({
                           <span style={{ marginRight: 6 }}>{ap.icon}</span>
                           <span style={{ fontWeight: 600 }}>{ap.name}</span>
                           <span style={{ fontSize: 11, opacity: 0.5, marginLeft: 6 }}>{ap.description}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* Org mode selector */}
+              {multiAgentEnabled && orgList.length > 0 && (
+                <div ref={orgMenuRef} style={{ position: "relative", marginLeft: 8 }}>
+                  <button
+                    className="chatModelPickerBtn"
+                    onClick={() => {
+                      if (orgMode) {
+                        setOrgMode(false);
+                        setSelectedOrgId(null);
+                        setOrgMenuOpen(false);
+                      } else {
+                        setOrgMenuOpen((v) => !v);
+                      }
+                    }}
+                    style={{
+                      gap: 4,
+                      background: orgMode ? "rgba(14,165,233,0.15)" : undefined,
+                      borderColor: orgMode ? "var(--primary)" : undefined,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 4 }}>
+                      <IconBuilding size={13} />
+                      {orgMode && selectedOrgId
+                        ? (() => { const o = orgList.find(x => x.id === selectedOrgId); return o ? o.name : "组织"; })()
+                        : "组织"}
+                    </span>
+                    {orgMode ? <IconX size={10} /> : <IconChevronDown size={12} />}
+                  </button>
+                  {orgMenuOpen && (
+                    <div className="chatModelMenu" style={{ minWidth: 200 }}>
+                      {orgList.map((o) => (
+                        <div
+                          key={o.id}
+                          className={`chatModelMenuItem ${selectedOrgId === o.id ? "chatModelMenuItemActive" : ""}`}
+                          onClick={() => {
+                            setOrgMode(true);
+                            setSelectedOrgId(o.id);
+                            setOrgMenuOpen(false);
+                          }}
+                        >
+                          <IconBuilding size={13} style={{ marginRight: 4, flexShrink: 0 }} />
+                          <span style={{ fontWeight: 600 }}>{o.name}</span>
+                          <span style={{ fontSize: 11, opacity: 0.5, marginLeft: 6 }}>{o.status}</span>
                         </div>
                       ))}
                     </div>

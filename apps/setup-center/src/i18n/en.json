@@ -13,6 +13,7 @@
     "identity": "Identity",
     "status": "Status Panel",
     "dashboard": "Collaboration",
+    "orgEditor": "Org Editor",
     "agentManager": "Agent Manager",
     "tokenStats": "Token Stats",
     "config": "Config",

@@ -96,16 +96,29 @@ from .token_tracking import (
 from .tool_executor import OVERFLOW_MARKER, ToolExecutor
 from .user_profile import get_profile_manager
 
-_DESKTOP_AVAILABLE = False
+_DESKTOP_AVAILABLE: bool | None = None  # None = not yet checked
 _desktop_tool_handler = None
-if sys.platform == "win32":
-    try:
-        from ..tools.desktop import DESKTOP_TOOLS, DesktopToolHandler
 
-        _DESKTOP_AVAILABLE = True
+
+def _ensure_desktop():
+    """延迟加载桌面自动化模块。
+
+    pyautogui 在部分 Windows 环境下初始化极慢甚至卡死，
+    通过环境变量 OPENAKITA_SKIP_DESKTOP=1 可完全跳过。
+    """
+    global _DESKTOP_AVAILABLE, _desktop_tool_handler
+    if _DESKTOP_AVAILABLE is not None:
+        return _DESKTOP_AVAILABLE
+    if sys.platform != "win32" or os.environ.get("OPENAKITA_SKIP_DESKTOP", ""):
+        _DESKTOP_AVAILABLE = False
+        return False
+    try:
+        from ..tools.desktop import DESKTOP_TOOLS, DesktopToolHandler  # noqa: F811
         _desktop_tool_handler = DesktopToolHandler()
+        _DESKTOP_AVAILABLE = True
     except ImportError:
-        pass
+        _DESKTOP_AVAILABLE = False
+    return _DESKTOP_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -350,8 +363,9 @@ class Agent:
 
         # 系统工具目录（渐进式披露）
         _all_tools = list(BASE_TOOLS)
-        if _DESKTOP_AVAILABLE:
-            _all_tools.extend(DESKTOP_TOOLS)
+        if _ensure_desktop():
+            from ..tools.desktop import DESKTOP_TOOLS as _DT
+            _all_tools.extend(_DT)
         if settings.multi_agent_enabled:
             from ..tools.definitions.agent import AGENT_TOOLS
             _all_tools.extend(AGENT_TOOLS)
@@ -417,10 +431,11 @@ class Agent:
         self._tools = list(BASE_TOOLS)
         self._skill_tool_names: set[str] = set()
 
-        # Add desktop tools on Windows
-        if _DESKTOP_AVAILABLE:
-            self._tools.extend(DESKTOP_TOOLS)
-            logger.info(f"Desktop automation tools enabled ({len(DESKTOP_TOOLS)} tools)")
+        # Add desktop tools on Windows (lazy load to avoid slow pyautogui init)
+        if _ensure_desktop():
+            from ..tools.desktop import DESKTOP_TOOLS as _DT2
+            self._tools.extend(_DT2)
+            logger.info(f"Desktop automation tools enabled ({len(_DT2)} tools)")
 
         # Multi-agent tools (only when enabled)
         if settings.multi_agent_enabled:
@@ -1041,7 +1056,7 @@ class Agent:
         )
 
         # 桌面工具（仅 Windows 且依赖可用时注册，与 _tools/ToolCatalog 保持一致）
-        if _DESKTOP_AVAILABLE:
+        if _ensure_desktop():
             self.handler_registry.register(
                 "desktop",
                 create_desktop_handler(self),

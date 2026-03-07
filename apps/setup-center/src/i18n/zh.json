@@ -13,6 +13,7 @@
     "identity": "身份配置",
     "status": "状态面板",
     "dashboard": "协作动态",
+    "orgEditor": "组织编排",
     "agentManager": "Agent 管理",
     "tokenStats": "Token 统计",
     "config": "配置",

@@ -155,7 +155,7 @@ async def read_env():
             masked[k] = v[:4] + "***" + v[-2:] if len(v) > 6 else "***"
         else:
             masked[k] = v
-    return {"env": env, "masked": masked, "raw": content}
+    return {"env": masked, "masked": masked, "raw": ""}
 
 
 @router.post("/api/config/env")
@@ -165,9 +165,15 @@ async def write_env(body: EnvUpdateRequest):
     existing = ""
     if env_path.exists():
         existing = env_path.read_bytes().decode("utf-8", errors="replace")
+    import re as _re
+    _env_key_pattern = _re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+    for key in body.entries:
+        if not _env_key_pattern.match(key):
+            from fastapi import HTTPException as _HE
+            raise _HE(status_code=400, detail=f"Invalid env key: {key}")
+
     new_content = _update_env_content(existing, body.entries)
     env_path.write_text(new_content, encoding="utf-8")
-    # Sync into os.environ so the running process picks up new values immediately
     for key, value in body.entries.items():
         if value:
             os.environ[key] = value

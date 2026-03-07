@@ -1,0 +1,217 @@
+"""
+OrgHeartbeat — 心跳调度、晨会/周报生成
+
+定期触发顶层 Agent 审视组织状态，支持晨会和周报自动生成。
+通过 heartbeat_max_cascade_depth 限制级联 LLM 调用深度。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .runtime import OrgRuntime
+
+from .models import Organization, OrgStatus, _now_iso
+
+logger = logging.getLogger(__name__)
+
+
+class OrgHeartbeat:
+    """Heartbeat scheduler for organizations."""
+
+    def __init__(self, runtime: OrgRuntime) -> None:
+        self._runtime = runtime
+        self._heartbeat_tasks: dict[str, asyncio.Task] = {}
+        self._standup_tasks: dict[str, asyncio.Task] = {}
+
+    async def start_for_org(self, org: Organization) -> None:
+        """Start heartbeat and standup schedules for an organization."""
+        if org.heartbeat_enabled and org.id not in self._heartbeat_tasks:
+            task = asyncio.create_task(self._heartbeat_loop(org))
+            self._heartbeat_tasks[org.id] = task
+            logger.info(f"[Heartbeat] Started heartbeat for {org.name} (interval={org.heartbeat_interval_s}s)")
+
+        if org.standup_enabled and org.id not in self._standup_tasks:
+            task = asyncio.create_task(self._standup_loop(org))
+            self._standup_tasks[org.id] = task
+            logger.info(f"[Heartbeat] Started standup for {org.name} (cron={org.standup_cron})")
+
+    async def stop_for_org(self, org_id: str) -> None:
+        """Stop all scheduled tasks for an organization."""
+        for registry in (self._heartbeat_tasks, self._standup_tasks):
+            task = registry.pop(org_id, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+    async def stop_all(self) -> None:
+        org_ids = list(set(list(self._heartbeat_tasks.keys()) + list(self._standup_tasks.keys())))
+        for oid in org_ids:
+            await self.stop_for_org(oid)
+
+    async def trigger_heartbeat(self, org_id: str) -> dict:
+        """Manually trigger a heartbeat cycle."""
+        org = self._runtime.get_org(org_id)
+        if not org:
+            return {"error": "Organization not found"}
+        return await self._execute_heartbeat(org)
+
+    async def trigger_standup(self, org_id: str) -> dict:
+        """Manually trigger a standup meeting."""
+        org = self._runtime.get_org(org_id)
+        if not org:
+            return {"error": "Organization not found"}
+        return await self._execute_standup(org)
+
+    # ------------------------------------------------------------------
+    # Heartbeat loop
+    # ------------------------------------------------------------------
+
+    async def _heartbeat_loop(self, org: Organization) -> None:
+        while True:
+            try:
+                await asyncio.sleep(org.heartbeat_interval_s)
+
+                current = self._runtime.get_org(org.id)
+                if not current or current.status not in (OrgStatus.ACTIVE, OrgStatus.RUNNING):
+                    continue
+                if not current.heartbeat_enabled:
+                    break
+
+                await self._execute_heartbeat(current)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[Heartbeat] Error in heartbeat loop for {org.id}: {e}")
+                await asyncio.sleep(60)
+
+    async def _execute_heartbeat(self, org: Organization) -> dict:
+        """Execute a single heartbeat cycle."""
+        roots = org.get_root_nodes()
+        if not roots:
+            return {"error": "No root nodes"}
+
+        es = self._runtime.get_event_store(org.id)
+        bb = self._runtime.get_blackboard(org.id)
+
+        node_summaries = []
+        for n in org.nodes:
+            messenger = self._runtime.get_messenger(org.id)
+            pending = messenger.get_pending_count(n.id) if messenger else 0
+            node_summaries.append(
+                f"- {n.role_title}({n.department}): 状态={n.status.value}, 待处理消息={pending}"
+            )
+
+        blackboard_summary = bb.get_org_summary() if bb else ""
+
+        nl = "\n"
+        prompt = (
+            f"[心跳检查] 当前时间: {_now_iso()}\n\n"
+            f"组织: {org.name}\n"
+            f"心跳提示: {org.heartbeat_prompt}\n\n"
+            f"## 各节点状态\n{nl.join(node_summaries)}\n\n"
+            f"## 组织黑板摘要\n{blackboard_summary}\n\n"
+            f"请审视以上状态。如果需要采取行动（分配任务/调整优先级/发布公告），"
+            f"请使用组织工具执行。如果一切正常，简短说明即可。\n\n"
+            f"注意：本次心跳级联深度限制为 {org.heartbeat_max_cascade_depth} 层，"
+            f"请谨慎控制委派深度。"
+        )
+
+        es.emit("heartbeat_triggered", "system", {
+            "node_count": len(org.nodes),
+        })
+
+        result = await self._runtime.send_command(org.id, roots[0].id, prompt)
+
+        es.emit("heartbeat_decision", roots[0].id, {
+            "result_preview": str(result.get("result", ""))[:200],
+        })
+
+        dismissed = self._runtime.get_scaler().try_reclaim_idle_clones(org.id)
+        if dismissed:
+            es.emit("clones_reclaimed", "system", {"dismissed": dismissed})
+            logger.info(f"[Heartbeat] Reclaimed {len(dismissed)} idle clones")
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Standup loop
+    # ------------------------------------------------------------------
+
+    async def _standup_loop(self, org: Organization) -> None:
+        """Simple interval-based standup (cron parsing deferred to Phase 4)."""
+        while True:
+            try:
+                await asyncio.sleep(3600)
+
+                current = self._runtime.get_org(org.id)
+                if not current or current.status not in (OrgStatus.ACTIVE, OrgStatus.RUNNING):
+                    continue
+                if not current.standup_enabled:
+                    break
+
+                now = datetime.now(timezone.utc)
+                if now.weekday() < 5 and now.hour == 9:
+                    await self._execute_standup(current)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[Heartbeat] Standup error for {org.id}: {e}")
+                await asyncio.sleep(60)
+
+    async def _execute_standup(self, org: Organization) -> dict:
+        """Execute a standup meeting."""
+        roots = org.get_root_nodes()
+        if not roots:
+            return {"error": "No root nodes"}
+
+        es = self._runtime.get_event_store(org.id)
+        bb = self._runtime.get_blackboard(org.id)
+
+        node_reports = []
+        for n in org.nodes:
+            if n.id == roots[0].id:
+                continue
+            node_reports.append(f"- {n.role_title}({n.department}): 状态={n.status.value}")
+
+        nl = "\n"
+        prompt = (
+            f"[晨会] 当前时间: {_now_iso()}\n\n"
+            f"组织: {org.name}\n"
+            f"晨会议程: {org.standup_agenda}\n\n"
+            f"## 团队成员状态\n{nl.join(node_reports)}\n\n"
+            f"请主持今日晨会：\n"
+            f"1. 点评各节点进展\n"
+            f"2. 识别阻塞和问题\n"
+            f"3. 调配资源（如需要）\n"
+            f"4. 生成简要晨会纪要\n\n"
+            f"将关键结论写入组织黑板（org_write_blackboard）。"
+        )
+
+        es.emit("standup_started", "system")
+        result = await self._runtime.send_command(org.id, roots[0].id, prompt)
+        es.emit("standup_completed", "system", {
+            "result_preview": str(result.get("result", ""))[:200],
+        })
+
+        now = datetime.now(timezone.utc)
+        report_path = self._runtime._manager._org_dir(org.id) / "reports" / f"standup_{now.strftime('%Y-%m-%d')}.md"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_content = (
+            f"# 晨会纪要 {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+            f"**组织**: {org.name}\n\n"
+            f"## 结论\n{result.get('result', '无')}\n"
+        )
+        await asyncio.to_thread(report_path.write_text, report_content, encoding="utf-8")
+
+        return result

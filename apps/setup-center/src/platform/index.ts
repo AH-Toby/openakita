@@ -284,6 +284,59 @@ export async function relaunchApp(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Popup / detached windows
+// ---------------------------------------------------------------------------
+
+/**
+ * Open a view in a detached popup window.
+ * In Tauri, creates a new WebviewWindow; in Web, uses window.open.
+ */
+export async function openPopupWindow(
+  path: string,
+  label: string,
+  opts?: { width?: number; height?: number; title?: string },
+): Promise<void> {
+  const width = opts?.width ?? 1200;
+  const height = opts?.height ?? 800;
+  const title = opts?.title ?? label;
+
+  if (IS_CAPACITOR) {
+    // Mobile: popup windows not supported, navigate in-place or no-op
+    return;
+  }
+
+  if (IS_TAURI) {
+    try {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+      new WebviewWindow(label, {
+        url: path,
+        title,
+        width,
+        height,
+        center: true,
+        decorations: true,
+        resizable: true,
+      });
+    } catch (e) {
+      window.open(path, label, `width=${width},height=${height}`);
+    }
+  } else {
+    const left = (screen.width - width) / 2;
+    const top = (screen.height - height) / 2;
+    window.open(
+      path,
+      label,
+      `width=${width},height=${height},left=${left},top=${top},resizable=yes`,
+    );
+  }
+}
+
+/** Whether popup windows are available on the current platform. */
+export function canOpenPopupWindow(): boolean {
+  return !IS_CAPACITOR;
+}
+
+// ---------------------------------------------------------------------------
 // Re-exports from sub-modules
 // ---------------------------------------------------------------------------
 
