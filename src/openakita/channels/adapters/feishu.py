@@ -168,9 +168,9 @@ class FeishuAdapter(ChannelAdapter):
             self._main_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._main_loop = None
-        logger.info("Feishu adapter: client initialized")
+        logger.info(f"[{self.channel_name}] Feishu adapter: client initialized")
 
-        # 尝试获取机器人 open_id（用于精确匹配 @提及）
+        # 尝试获取机器人 open_id（用于精确匹配 @提及）+ 诊断 app 配置状态
         try:
             import lark_oapi.api.bot.v3 as bot_v3
 
@@ -180,17 +180,34 @@ class FeishuAdapter(ChannelAdapter):
             )
             if resp.success() and resp.data and resp.data.bot:
                 self._bot_open_id = getattr(resp.data.bot, "open_id", None)
-                logger.info(f"Feishu bot open_id: {self._bot_open_id}")
+                bot_name = getattr(resp.data.bot, "app_name", "?")
+                logger.info(
+                    f"[{self.channel_name}] Bot info: name={bot_name}, "
+                    f"open_id={self._bot_open_id}, app_id={self.config.app_id}"
+                )
+            else:
+                code = getattr(resp, "code", "?")
+                msg = getattr(resp, "msg", "?")
+                logger.warning(
+                    f"[{self.channel_name}] Bot info request failed: "
+                    f"code={code}, msg={msg} — 请检查飞书控制台："
+                    f"1) 应用是否启用了「机器人」能力 "
+                    f"2) 是否已发布应用版本 "
+                    f"3) 是否开通了 im:message 权限"
+                )
         except Exception as e:
-            logger.debug(f"Feishu: could not fetch bot info (non-critical): {e}")
+            logger.warning(
+                f"[{self.channel_name}] Could not fetch bot info: {e} — "
+                f"app_id={self.config.app_id}"
+            )
 
         # 自动启动 WebSocket 长连接（非阻塞模式）
         try:
             self.start_websocket(blocking=False)
-            logger.info("Feishu adapter: WebSocket started in background")
+            logger.info(f"[{self.channel_name}] Feishu adapter: WebSocket started in background")
         except Exception as e:
-            logger.warning(f"Feishu adapter: WebSocket startup failed: {e}")
-            logger.warning("Feishu adapter: falling back to webhook-only mode")
+            logger.warning(f"[{self.channel_name}] WebSocket startup failed: {e}")
+            logger.warning(f"[{self.channel_name}] Falling back to webhook-only mode")
 
     def start_websocket(self, blocking: bool = True) -> None:
         """
@@ -209,7 +226,7 @@ class FeishuAdapter(ChannelAdapter):
         if not self._event_dispatcher:
             self._setup_event_dispatcher()
 
-        logger.info("Starting Feishu WebSocket connection...")
+        logger.info(f"[{self.channel_name}] Starting Feishu WebSocket connection...")
 
         # 关键点：
         # lark_oapi.ws.client 在模块级保存了一个全局 loop 变量（导入时绑定）。
@@ -269,7 +286,7 @@ class FeishuAdapter(ChannelAdapter):
                 name="FeishuWebSocket",
             )
             self._ws_thread.start()
-            logger.info("Feishu WebSocket client started in background thread")
+            logger.info(f"[{self.channel_name}] Feishu WebSocket client started in background thread")
 
     def _setup_event_dispatcher(self) -> None:
         """设置事件分发器"""
@@ -322,7 +339,7 @@ class FeishuAdapter(ChannelAdapter):
                 for _ in range(to_remove):
                     self._seen_message_ids.discard(next(it))
 
-            logger.info(f"Feishu: received message from {sender.sender_id.open_id}")
+            logger.info(f"[{self.channel_name}] Received message from {sender.sender_id.open_id}")
 
             # 提取 mentions 列表（用于 is_mentioned 检测）
             mentions_raw = []
@@ -376,7 +393,8 @@ class FeishuAdapter(ChannelAdapter):
                 fut.add_done_callback(_on_dispatch_done)
             else:
                 logger.error(
-                    "Main event loop not set (Feishu adapter not started from async context?), "
+                    f"[{self.channel_name}] Main event loop not set "
+                    f"(adapter not started from async context?), "
                     "dropping message to avoid asyncio.run() in WebSocket thread"
                 )
 
@@ -459,7 +477,7 @@ class FeishuAdapter(ChannelAdapter):
         self._ws_thread = None
         self._ws_loop = None
         self._client = None
-        logger.info("Feishu adapter stopped")
+        logger.info(f"[{self.channel_name}] Feishu adapter stopped")
 
     def handle_event(self, body: dict, headers: dict) -> dict:
         """
