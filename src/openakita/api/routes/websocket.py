@@ -95,11 +95,13 @@ def _is_local_ws(ws: WebSocket) -> bool:
 
 def _authenticate_ws(ws: WebSocket, config: WebAccessConfig) -> bool:
     """Authenticate WebSocket connection via query param or local access."""
-    # Local connections are exempt
+    # Local connections are exempt — same logic as HTTP middleware:
+    # direct local connections (no X-Forwarded-For) bypass auth even with
+    # trust_proxy; proxy-forwarded ones must provide a valid token.
     if _is_local_ws(ws):
         import os
         trust_proxy = os.environ.get("TRUST_PROXY", "").lower() in ("1", "true", "yes")
-        if not trust_proxy:
+        if not trust_proxy or not ws.headers.get("x-forwarded-for"):
             return True
 
     # Check token from query params

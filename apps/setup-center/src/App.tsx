@@ -2003,16 +2003,54 @@ export function App() {
 
       // Step 3: 触发重启
       setRestartOverlay({ phase: "restarting" });
-      try {
-        await fetch(`${base}/api/config/restart`, { method: "POST", signal: AbortSignal.timeout(3000) });
-      } catch { /* 请求可能因服务关闭而失败，这是预期的 */ }
+      const wsId = currentWorkspaceId || workspaces[0]?.id;
 
-      // Step 4: 等待服务关闭（轮询端口不可达，而非固定延时）
-      await waitForServiceDown(base, 15000);
+      if (IS_TAURI && wsId && venvDir && dataMode === "local") {
+        // ── Tauri 本地模式：进程级重启（杀旧进程 → 启新进程） ──
+        // 比 Python 进程内重启更可靠，不受 Windows asyncio / 端口 TIME_WAIT 影响。
 
-      // Step 5: 轮询等待服务恢复
+        // 3a. 优雅关闭服务
+        try {
+          const shutRes = await fetch(`${base}/api/shutdown`, { method: "POST", signal: AbortSignal.timeout(2000) });
+          if (shutRes.ok) await new Promise((r) => setTimeout(r, 1000));
+        } catch { /* 请求可能因服务关闭而失败 */ }
+
+        // 3b. PID 级别兜底确保进程退出
+        try {
+          await invoke("openakita_service_stop", { workspaceId: wsId });
+        } catch { /* PID 文件可能不存在 */ }
+
+        // 3c. 等待旧服务完全关闭
+        await waitForServiceDown(base, 15000);
+
+        // 3d. 启动新进程
+        setRestartOverlay({ phase: "waiting" });
+        try {
+          const ss = await invoke<{ running: boolean; pid: number | null; pidFile: string }>(
+            "openakita_service_start", { venvDir, workspaceId: wsId },
+          );
+          setServiceStatus(ss);
+        } catch (e) {
+          setRestartOverlay({ phase: "fail" });
+          setTimeout(() => {
+            setRestartOverlay(null);
+            setError(t("config.restartFail") + ": " + String(e));
+          }, 2500);
+          return;
+        }
+      } else {
+        // ── Web / Capacitor 模式：进程内重启（唯一可用方式） ──
+        try {
+          await fetch(`${base}/api/config/restart`, { method: "POST", signal: AbortSignal.timeout(3000) });
+        } catch { /* 请求可能因服务关闭而失败 */ }
+
+        // 等待服务关闭
+        await waitForServiceDown(base, 15000);
+      }
+
+      // Step 4: 轮询等待服务恢复
       setRestartOverlay({ phase: "waiting" });
-      const maxWait = 30_000; // 最多等 30 秒
+      const maxWait = IS_TAURI ? 60_000 : 30_000;
       const pollInterval = 1000;
       const startTime = Date.now();
       let recovered = false;
@@ -2023,7 +2061,6 @@ export function App() {
           const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(2000) });
           if (res.ok) {
             recovered = true;
-            // 更新后端版本
             try {
               const data = await res.json();
               if (data.version) setBackendVersion(data.version);
@@ -2038,9 +2075,7 @@ export function App() {
         setServiceStatus((prev) =>
           prev ? { ...prev, running: true } : { running: true, pid: null, pidFile: "" }
         );
-        // 刷新配置数据
         try { await refreshStatus(undefined, undefined, true); } catch { /* ignore */ }
-        // 重启后重新检测端点健康状态
         autoCheckEndpoints(apiBaseUrl);
         setTimeout(() => {
           setRestartOverlay(null);
@@ -5323,6 +5358,64 @@ export function App() {
       } catch (e) { setError(String(e)); }
     }
 
+    // ── 系统运维区域 ──
+
+    const opsWs = workspaces.find(w => w.id === (currentWorkspaceId || "default"));
+    const opsWsPath = opsWs?.path || "";
+    const opsLogsPath = opsWsPath ? joinPath(opsWsPath, "logs") : "";
+    const opsIdentityPath = opsWsPath ? joinPath(opsWsPath, "identity") : "";
+
+    const opsPathRows: { label: string; path: string }[] = [
+      { label: t("adv.opsWorkspacePath"), path: opsWsPath },
+      { label: t("adv.opsLogsPath"), path: opsLogsPath },
+      { label: t("adv.opsIdentityPath"), path: opsIdentityPath },
+    ];
+
+    async function opsOpenFolder(p: string) {
+      if (!p) return;
+      try {
+        await invoke("show_item_in_folder", { path: p });
+      } catch {
+        try {
+          await invoke("open_file_with_default", { path: p });
+        } catch {
+          if (opsWsPath && opsWsPath !== p) {
+            try { await invoke("open_file_with_default", { path: opsWsPath }); } catch (e) { setError(String(e)); }
+          }
+        }
+      }
+    }
+
+    async function opsHandleBundleExport() {
+      if (!currentWorkspaceId) return;
+      try {
+        const ts = Math.floor(Date.now() / 1000);
+        const filename = `openakita-diagnostic-${ts}.zip`;
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const defaultDir = info?.homeDir ? joinPath(info.homeDir, "Downloads") : undefined;
+        const chosen = await save({
+          defaultPath: defaultDir ? joinPath(defaultDir, filename) : filename,
+          filters: [{ name: "ZIP Archive", extensions: ["zip"] }],
+        });
+        if (!chosen) return;
+        setBusy(t("adv.opsLogExporting"));
+        let sysInfoJson: string | undefined;
+        if (shouldUseHttpApi()) {
+          try {
+            const res = await safeFetch(`${httpApiBase()}/api/system-info`, { signal: AbortSignal.timeout(5_000) });
+            const data = await res.json();
+            sysInfoJson = JSON.stringify(data, null, 2);
+          } catch { /* best-effort */ }
+        }
+        const dest = await invoke<string>("export_diagnostic_bundle", {
+          workspaceId: currentWorkspaceId,
+          systemInfoJson: sysInfoJson ?? null,
+          destPath: chosen,
+        });
+        setNotice(t("adv.opsLogExportSuccess", { path: dest }));
+        await invoke("show_item_in_folder", { path: dest });
+      } catch (e) { setError(String(e)); } finally { setBusy(null); }
+    }
 
     async function exportEnv() {
       if (!currentWorkspaceId || !IS_TAURI) { if (!IS_TAURI) setError("Web 模式暂不支持导出 .env"); return; }
@@ -5589,6 +5682,46 @@ export function App() {
             </div>
         </div>
 
+        {/* ── 系统运维 ── */}
+        {IS_TAURI && (
+        <div className="card" style={{ marginTop: 12 }}>
+          {sectionHeader("ops", t("adv.opsTitle"))}
+          <div style={{ paddingLeft: 22 }}>
+            {/* 路径信息 */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 8, color: "var(--muted)" }}>{t("adv.opsPaths")}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", gap: "6px 12px", alignItems: "center", fontSize: 13 }}>
+                {opsPathRows.map((row) => (
+                  <Fragment key={row.label}>
+                    <span style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{row.label}</span>
+                    <span style={{ wordBreak: "break-all", color: "var(--muted)", fontSize: 12, fontFamily: "monospace" }}>{row.path || "—"}</span>
+                    <button className="btnSmall" onClick={() => opsOpenFolder(row.path)} disabled={!row.path}>{t("adv.opsOpenFolder")}</button>
+                  </Fragment>
+                ))}
+              </div>
+            </div>
+
+            {/* 环境变量管理 */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 8, color: "var(--muted)" }}>{t("adv.opsEnvManage")}</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btnSmall" onClick={exportEnv} disabled={!!busy || !currentWorkspaceId}>{t("adv.opsEnvExport")}</button>
+                <button className="btnSmall" onClick={importEnv} disabled={!!busy || !currentWorkspaceId}>{t("adv.opsEnvImport")}</button>
+              </div>
+            </div>
+
+            {/* 诊断日志导出 */}
+            <div>
+              <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 4, color: "var(--muted)" }}>{t("adv.opsLogExport")}</div>
+              <div className="cardHint" style={{ marginBottom: 8 }}>{t("adv.opsLogExportDesc")}</div>
+              <button className="btnSmall" onClick={opsHandleBundleExport} disabled={!!busy || !currentWorkspaceId}>
+                {busy === t("adv.opsLogExporting") ? t("adv.opsLogExporting") : t("adv.opsLogExportBtn")}
+              </button>
+            </div>
+          </div>
+        </div>
+        )}
+
         {/* ── 平台连接（Agent Hub / Skill Store） ── */}
         <div className="card" style={{ marginTop: 12 }}>
           {sectionHeader("hub", t("adv.hubTitle"))}
@@ -5711,8 +5844,8 @@ export function App() {
           </div>
         </div>
 
-        {/* ── Web 访问密码管理 (desktop only) ── */}
-        {IS_TAURI && shouldUseHttpApi() && (
+        {/* ── Web 访问密码管理 (desktop local only, change-password API requires localhost) ── */}
+        {IS_TAURI && !!serviceStatus?.running && dataMode !== "remote" && (
         <div className="card" style={{ marginTop: 12 }}>
           {sectionHeader("webpw", t("adv.webPasswordTitle"))}
           <div style={{ paddingLeft: 22 }}>
@@ -5722,7 +5855,8 @@ export function App() {
         </div>
         )}
 
-        {/* ── .env 导出/导入（保留旧功能） ── */}
+        {/* ── .env 导出/导入（Web 模式保留，Tauri 模式在系统运维卡片中） ── */}
+        {!IS_TAURI && (
         <div className="card" style={{ marginTop: 12 }}>
           {sectionHeader("envio", t("adv.export").replace(" .env", "") + " / " + t("adv.import").replace(" .env", "") + " .env")}
             <div style={{ paddingLeft: 22 }}>
@@ -5732,6 +5866,7 @@ export function App() {
               </div>
             </div>
         </div>
+        )}
 
         {/* ── 数据备份与恢复 ── */}
         <div className="card" style={{ marginTop: 12 }}>
@@ -7837,36 +7972,35 @@ export function App() {
           onServerManager={IS_CAPACITOR ? () => setShowServerManager(true) : undefined}
         />
 
-        <div style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-          {showPwBanner && (
-            <div style={{
-              flexShrink: 0,
-              display: "flex", alignItems: "center", gap: isMobile ? 6 : 10,
-              padding: isMobile ? "6px 10px" : "8px 16px",
-              background: "var(--warning-bg, #fef3c7)", borderBottom: "1px solid var(--warning-border, #f59e0b)",
-              color: "var(--warning-text, #92400e)", fontSize: isMobile ? 12 : 13,
-            }}>
-              <span style={{ flex: 1 }}>
-                {isMobile
-                  ? t("web.passwordBannerShort", { defaultValue: "访问密码为自动生成，建议设置自定义密码。" })
-                  : t("web.passwordBanner", { defaultValue: "当前 Web 访问密码为系统自动生成，建议前往设置页面配置自定义密码以保障远程访问安全。" })}
-              </span>
-              <button className="btnSmall" style={{ whiteSpace: "nowrap", fontWeight: 500, fontSize: isMobile ? 11 : undefined, padding: isMobile ? "2px 8px" : undefined }} onClick={() => {
-                setView("wizard");
-                setStepId("advanced");
-                setShowPwBanner(false);
-                localStorage.setItem("openakita_pw_banner_dismissed", "1");
-              }}>{t("web.passwordBannerAction", { defaultValue: "去设置" })}</button>
-              <button style={{
-                background: "none", border: "none", cursor: "pointer", padding: 2,
-                color: "var(--warning-text, #92400e)", fontSize: 16, lineHeight: 1, opacity: 0.6,
-              }} onClick={() => {
-                setShowPwBanner(false);
-                localStorage.setItem("openakita_pw_banner_dismissed", "1");
-              }} title={t("common.close", { defaultValue: "关闭" })}>×</button>
-            </div>
-          )}
+        {showPwBanner && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: isMobile ? 6 : 10,
+            padding: isMobile ? "6px 10px" : "8px 16px",
+            background: "var(--warning-bg, #fef3c7)", borderBottom: "1px solid var(--warning-border, #f59e0b)",
+            color: "var(--warning-text, #92400e)", fontSize: isMobile ? 12 : 13,
+          }}>
+            <span style={{ flex: 1 }}>
+              {isMobile
+                ? t("web.passwordBannerShort", { defaultValue: "访问密码为自动生成，建议设置自定义密码。" })
+                : t("web.passwordBanner", { defaultValue: "当前 Web 访问密码为系统自动生成，建议前往设置页面配置自定义密码以保障远程访问安全。" })}
+            </span>
+            <button className="btnSmall" style={{ whiteSpace: "nowrap", fontWeight: 500, fontSize: isMobile ? 11 : undefined, padding: isMobile ? "2px 8px" : undefined }} onClick={() => {
+              setView("wizard");
+              setStepId("advanced");
+              setShowPwBanner(false);
+              localStorage.setItem("openakita_pw_banner_dismissed", "1");
+            }}>{t("web.passwordBannerAction", { defaultValue: "去设置" })}</button>
+            <button style={{
+              background: "none", border: "none", cursor: "pointer", padding: 2,
+              color: "var(--warning-text, #92400e)", fontSize: 16, lineHeight: 1, opacity: 0.6,
+            }} onClick={() => {
+              setShowPwBanner(false);
+              localStorage.setItem("openakita_pw_banner_dismissed", "1");
+            }} title={t("common.close", { defaultValue: "关闭" })}>×</button>
+          </div>
+        )}
 
+        <div style={{ gridRow: 3, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
           {/* ChatView 始终挂载，切走时隐藏以保留聊天记录 */}
           <div className="contentChat" style={{ display: view === "chat" ? undefined : "none", flex: 1, minHeight: 0 }}>
             <ChatView
@@ -8130,7 +8264,7 @@ export function App() {
         {view === "wizard" ? (() => {
           const saveConfig = getFooterSaveConfig();
           return saveConfig ? (
-            <div className="footer" style={{ justifyContent: "flex-end" }}>
+            <div className="footer" style={{ gridRow: 4, justifyContent: "flex-end" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <button className="btnPrimary"
                   onClick={() => renderIntegrationsSave(saveConfig.keys, saveConfig.savedMsg)}

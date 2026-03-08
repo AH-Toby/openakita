@@ -629,7 +629,7 @@ export function SkillManager({
     [skills, envDraft, enabledDraft],
   );
 
-  // 已安装技能搜索过滤（同时匹配原始字段和 i18n 字段）
+  // 已安装技能搜索过滤（同时匹配原始字段、i18n 字段、目录名和安装来源）
   const filteredSkills = useMemo(() => {
     const q = installedSearch.trim().toLowerCase();
     if (!q) return skillsWithConfig;
@@ -637,6 +637,12 @@ export function SkillManager({
       if (s.name.toLowerCase().includes(q)) return true;
       if (s.description && s.description.toLowerCase().includes(q)) return true;
       if (s.category && s.category.toLowerCase().includes(q)) return true;
+      if (s.path) {
+        const parts = s.path.replace(/\\/g, "/").split("/");
+        const dirName = parts.length >= 2 ? parts[parts.length - 2] : "";
+        if (dirName.toLowerCase().includes(q)) return true;
+      }
+      if (s.sourceUrl && s.sourceUrl.toLowerCase().includes(q)) return true;
       const i18nValues = [
         ...Object.values(s.name_i18n || {}),
         ...Object.values(s.description_i18n || {}),
@@ -865,7 +871,7 @@ export function SkillManager({
     }
 
     try {
-      const res = await safeFetch(`${apiBaseUrl}/api/skills/${encodeURIComponent(skill.name)}/content`, {
+      const res = await safeFetch(`${apiBaseUrl}/api/skills/content/${encodeURIComponent(skill.name)}`, {
         signal: AbortSignal.timeout(10_000),
       });
       if (detailRequestNameRef.current !== requestName) return;
@@ -899,7 +905,7 @@ export function SkillManager({
     setDetailSaving(true);
     setDetailContentError(null);
     try {
-      const res = await safeFetch(`${apiBaseUrl}/api/skills/${encodeURIComponent(detailSkill.name)}/content`, {
+      const res = await safeFetch(`${apiBaseUrl}/api/skills/content/${encodeURIComponent(detailSkill.name)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: detailEditContent }),
@@ -939,8 +945,11 @@ export function SkillManager({
         tags: [],
         installed: skills.some((local) => {
           const nameMatch = local.name === skillId;
-          const dirMatch = local.path ? local.path.replace(/\\/g, "/").split("/").pop() === skillId : false;
-          return nameMatch || dirMatch;
+          const pathParts = local.path ? local.path.replace(/\\/g, "/").split("/") : [];
+          const dirName = pathParts.length >= 2 ? pathParts[pathParts.length - 2] : "";
+          const dirMatch = dirName === skillId;
+          const sourceMatch = local.sourceUrl ? local.sourceUrl === installUrl : false;
+          return nameMatch || dirMatch || sourceMatch;
         }),
       };
     });

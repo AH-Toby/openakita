@@ -351,7 +351,6 @@ def _is_auth_exempt(path: str) -> bool:
 
 def create_auth_middleware(config: WebAccessConfig):
     """Create the authentication middleware function."""
-    trust_proxy = os.environ.get("TRUST_PROXY", "").lower() in ("1", "true", "yes")
 
     async def auth_middleware(request: Request, call_next):
         # CORS preflight must always pass through (browser sends OPTIONS without auth)
@@ -364,8 +363,19 @@ def create_auth_middleware(config: WebAccessConfig):
         if _is_auth_exempt(path):
             return await call_next(request)
 
-        # Local requests bypass auth (unless behind reverse proxy)
-        if not trust_proxy and _is_local_request(request):
+        # Read trust_proxy on every request so that changes made via
+        # /api/config/env take effect immediately without a server restart.
+        trust_proxy = os.environ.get("TRUST_PROXY", "").lower() in ("1", "true", "yes")
+
+        # Local requests bypass auth.
+        # When trust_proxy is on, a reverse proxy (Nginx/Caddy) connects from
+        # 127.0.0.1 but always adds X-Forwarded-For.  A direct local connection
+        # (e.g. Tauri desktop) also comes from 127.0.0.1 but has NO
+        # X-Forwarded-For.  We use this to distinguish the two: direct local
+        # connections are still exempt; proxy-forwarded ones must authenticate.
+        if _is_local_request(request) and (
+            not trust_proxy or not request.headers.get("x-forwarded-for")
+        ):
             return await call_next(request)
 
         # Check Authorization header

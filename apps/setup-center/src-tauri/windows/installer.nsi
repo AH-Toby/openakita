@@ -504,7 +504,9 @@ Function PageEnvCheck
 FunctionEnd
 
 Function PageLeaveEnvCheck
- ; ── 用户数据清理确认逻辑 ──
+ ; 仅处理用户确认对话框和设置标志位。
+ ; 实际的进程杀死和目录清理统一在 NSIS_HOOK_PREINSTALL（Section Install）中执行，
+ ; 那里有进度日志，用户不会感觉界面卡死。
  ${If} $EnvCleanUserData != ""
   ${NSD_GetState} $EnvCleanUserData $0
   ${If} $0 = ${BST_CHECKED}
@@ -522,108 +524,6 @@ Function PageLeaveEnvCheck
    env_userdata_final_confirm:
    StrCpy $EnvCleanUserDataConfirmed 1
   ${EndIf}
- ${EndIf}
-
- ; ── 清理前先杀掉旧进程（避免文件锁定导致删除失败） ──
- ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Get-Process -Name openakita-setup-center -ErrorAction SilentlyContinue | Stop-Process -Force"' $0
- ${If} $0 != 0
-  ExecWait 'taskkill /IM openakita-setup-center.exe /T /F' $0
- ${EndIf}
- ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "Get-Process -Name openakita-server -ErrorAction SilentlyContinue | Stop-Process -Force"' $0
- ${If} $0 != 0
-  ExecWait 'taskkill /IM openakita-server.exe /T /F' $0
- ${EndIf}
- !insertmacro _OpenAkita_KillAllServicePids
- Sleep 2000
-
- ; ── 自动清理环境组件（无需用户选择） ──
- ExpandEnvStrings $R0 "%USERPROFILE%\.openakita"
-
- ; run 目录（stale PID 文件）
- StrCpy $R8 "$R0\run"
- ${If} ${FileExists} "$R8\*.*"
-  System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
-  ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "try { Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction Stop } catch { exit 1 }"' $0
-  ${If} $0 != 0
-   ExecWait 'cmd /c rd /s /q "$R8"'
-  ${EndIf}
- ${EndIf}
-
- ; venv
- StrCpy $R8 "$R0\venv"
- ${If} ${FileExists} "$R8\*.*"
-  System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
-  ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "try { Get-ChildItem -Path $env:NSIS_DEL_PATH -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { $$_.IsReadOnly = $$false }; Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction Stop } catch { exit 1 }"' $0
-  ${If} $0 != 0
-   ExecWait 'cmd /c rd /s /q "$R8"'
-  ${EndIf}
- ${EndIf}
-
- ; runtime
- StrCpy $R8 "$R0\runtime"
- ${If} ${FileExists} "$R8\*.*"
-  System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
-  ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "try { Get-ChildItem -Path $env:NSIS_DEL_PATH -Recurse -Force -File -ErrorAction SilentlyContinue | ForEach-Object { $$_.IsReadOnly = $$false }; Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction Stop } catch { exit 1 }"' $0
-  ${If} $0 != 0
-   ExecWait 'cmd /c rd /s /q "$R8"'
-  ${EndIf}
- ${EndIf}
-
- ; modules
- StrCpy $R8 "$R0\modules"
- ${If} ${FileExists} "$R8\*.*"
-  System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
-  ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "try { Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction Stop } catch { exit 1 }"' $0
-  ${If} $0 != 0
-   ExecWait 'cmd /c rd /s /q "$R8"'
-  ${EndIf}
- ${EndIf}
-
- ; 历史 Python 运行时残留
- StrCpy $R8 "$R0\python"
- ${If} ${FileExists} "$R8\*.*"
-  System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
-  ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "try { Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction Stop } catch { exit 1 }"' $0
-  ${If} $0 != 0
-   ExecWait 'cmd /c rd /s /q "$R8"'
-  ${EndIf}
- ${EndIf}
-
- StrCpy $R8 "$R0\embedded_python"
- ${If} ${FileExists} "$R8\*.*"
-  System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
-  ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "try { Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction Stop } catch { exit 1 }"' $0
-  ${If} $0 != 0
-   ExecWait 'cmd /c rd /s /q "$R8"'
-  ${EndIf}
- ${EndIf}
-
- ; ── 执行用户数据清理（需要双重确认通过） ──
- ${If} $EnvCleanUserDataConfirmed = 1
-  ; ~/.openakita 下的用户数据
-  StrCpy $R8 "$R0\workspaces"
-  System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
-  ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "try { Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction Stop } catch { exit 1 }"' $0
-  ${If} $0 != 0
-   ExecWait 'cmd /c rd /s /q "$R8"'
-  ${EndIf}
-
-  Delete "$R0\state.json"
-  Delete "$R0\config.json"
-  Delete "$R0\.env"
-  Delete "$R0\cli.json"
-
-  StrCpy $R8 "$R0\logs"
-  System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t R8)'
-  ExecWait 'powershell -NoProfile -WindowStyle Hidden -Command "try { Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction Stop } catch { exit 1 }"' $0
-  ${If} $0 != 0
-   ExecWait 'cmd /c rd /s /q "$R8"'
-  ${EndIf}
-
-  ; Tauri 应用数据目录（WebView 缓存、localStorage 等前端数据）
-  SetShellVarContext current
-  RmDir /r "$APPDATA\${BUNDLEID}"
-  RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
  ${EndIf}
 FunctionEnd
 
@@ -1031,9 +931,11 @@ Section Install
   ${If} $R3 = ${BST_CHECKED}
    !insertmacro _OpenAkita_WritePathHelper
    !if "${INSTALLMODE}" == "perMachine"
-    ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\_oa_pathhelper.ps1" -Action add -BinDir "$INSTDIR\bin" -RegPath "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"' $R9
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\_oa_pathhelper.ps1" -Action add -BinDir "$INSTDIR\bin" -RegPath "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"'
+    Pop $R9
    !else
-    ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\_oa_pathhelper.ps1" -Action add -BinDir "$INSTDIR\bin" -RegPath "HKCU:\Environment"' $R9
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\_oa_pathhelper.ps1" -Action add -BinDir "$INSTDIR\bin" -RegPath "HKCU:\Environment"'
+    Pop $R9
    !endif
    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
   ${EndIf}
@@ -1129,9 +1031,11 @@ Section Uninstall
  ${If} $R8 != ""
   !insertmacro _OpenAkita_WritePathHelper
   ; 从系统 PATH 移除
-  ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\_oa_pathhelper.ps1" -Action remove -BinDir "$R8" -RegPath "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"' $R9
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\_oa_pathhelper.ps1" -Action remove -BinDir "$R8" -RegPath "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"'
+  Pop $R9
   ; 从用户 PATH 移除
-  ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$PLUGINSDIR\_oa_pathhelper.ps1" -Action remove -BinDir "$R8" -RegPath "HKCU:\Environment"' $R9
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\_oa_pathhelper.ps1" -Action remove -BinDir "$R8" -RegPath "HKCU:\Environment"'
+  Pop $R9
   ; 广播 WM_SETTINGCHANGE
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
  ${EndIf}

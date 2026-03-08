@@ -973,8 +973,17 @@ def _try_platform_skill_download(skill_id: str, dest_dir: Path) -> bool:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             zf.extractall(dest_dir)
         skill_md = dest_dir / "SKILL.md"
-        return skill_md.exists()
+        if skill_md.exists():
+            return True
+        # ZIP didn't contain SKILL.md — clean up the directory we created
+        import shutil
+        shutil.rmtree(str(dest_dir), ignore_errors=True)
+        return False
     except Exception:
+        # Clean up partially created directory on any failure
+        if dest_dir.exists():
+            import shutil
+            shutil.rmtree(str(dest_dir), ignore_errors=True)
         return False
 
 
