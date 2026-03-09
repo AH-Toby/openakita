@@ -97,6 +97,15 @@ class OrgMessenger:
         for node in org.nodes:
             self._mailboxes[node.id] = NodeMailbox(node.id)
 
+    def clear_all(self) -> None:
+        """Clear all mailboxes and pending state (used during org reset)."""
+        for node_id in list(self._mailboxes):
+            self._mailboxes[node_id] = NodeMailbox(node_id)
+        self._pending_messages.clear()
+        self._wait_graph.clear()
+        self._edge_msg_counts.clear()
+        self._task_affinity.clear()
+
     def update_org(self, org: Organization) -> None:
         self._org = org
         for node in org.nodes:

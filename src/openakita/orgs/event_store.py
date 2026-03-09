@@ -32,6 +32,14 @@ class OrgEventStore:
         self._reports_dir.mkdir(parents=True, exist_ok=True)
         self._logs_dir.mkdir(parents=True, exist_ok=True)
 
+    def clear(self) -> None:
+        """Remove all event files (used during org reset)."""
+        import shutil
+        for d in (self._events_dir, self._logs_dir):
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+                d.mkdir(parents=True, exist_ok=True)
+
     def emit(
         self,
         event_type: str,

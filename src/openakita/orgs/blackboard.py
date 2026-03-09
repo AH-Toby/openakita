@@ -30,6 +30,13 @@ class OrgBlackboard:
         self._memory_dir = org_dir / "memory"
         self._memory_dir.mkdir(parents=True, exist_ok=True)
 
+    def clear(self) -> None:
+        """Remove all blackboard/memory data (used during org reset)."""
+        import shutil
+        if self._memory_dir.exists():
+            shutil.rmtree(self._memory_dir, ignore_errors=True)
+            self._memory_dir.mkdir(parents=True, exist_ok=True)
+
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------

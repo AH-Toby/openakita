@@ -834,6 +834,24 @@ export function OrgEditorView({
     } catch (e) { console.error("Failed to stop org:", e); }
   }, [currentOrg, apiBaseUrl]);
 
+  const [confirmReset, setConfirmReset] = useState(false);
+  const handleResetOrg = useCallback(async () => {
+    if (!currentOrg) return;
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/reset`, { method: "POST" });
+      const data = await res.json();
+      setCurrentOrg(data);
+      setLiveMode(false);
+      setActivityFeed([]);
+      setNodeEvents([]);
+      setNodeThinking([]);
+      setNodeSchedules([]);
+      setOrgStats(null);
+      showToast("组织已重置");
+    } catch (e) { console.error("Failed to reset org:", e); }
+    setConfirmReset(false);
+  }, [currentOrg, apiBaseUrl]);
+
   // ── Save ──
 
   const handleSave = useCallback(async () => {
@@ -1241,6 +1259,19 @@ export function OrgEditorView({
                 <IconStop size={12} /> 停止
               </button>
             )}
+            <div style={{ position: "relative" }}>
+              {confirmReset ? (
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <span style={{ fontSize: 11, color: "var(--danger)" }}>确认重置?</span>
+                  <button className="btnSmall" onClick={handleResetOrg} style={{ color: "var(--danger)", fontSize: 11, padding: "2px 6px" }}>确认</button>
+                  <button className="btnSmall" onClick={() => setConfirmReset(false)} style={{ fontSize: 11, padding: "2px 6px" }}>取消</button>
+                </div>
+              ) : (
+                <button className="btnSmall" onClick={() => setConfirmReset(true)} title="重置组织：清空所有运行数据，恢复为初始状态">
+                  <IconRefresh size={12} /> {!isMobile && "重置"}
+                </button>
+              )}
+            </div>
             <button
               className="btnSmall"
               onClick={() => setLiveMode(!liveMode)}

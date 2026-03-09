@@ -270,6 +270,64 @@ class OrgRuntime:
 
         return org
 
+    async def reset_org(self, org_id: str) -> Organization:
+        """Reset an organization: stop it, clear all runtime state, and restart fresh."""
+        org = self._active_orgs.get(org_id) or self._manager.get(org_id)
+        if not org:
+            raise ValueError(f"Organization not found: {org_id}")
+
+        # 1. Stop if running
+        if org.status in (OrgStatus.ACTIVE, OrgStatus.RUNNING, OrgStatus.PAUSED):
+            try:
+                await self.stop_org(org_id)
+            except Exception:
+                pass
+
+        # 2. Reset all node statuses to idle, clear frozen state and current_task
+        for node in org.nodes:
+            node.status = NodeStatus.IDLE
+            node.frozen_by = None
+            node.frozen_reason = None
+            node.frozen_at = None
+            node.current_task = None
+
+        # 3. Evict all agent caches for this org
+        keys_to_evict = [k for k in self._agent_cache if k.startswith(f"{org_id}:")]
+        for k in keys_to_evict:
+            self._agent_cache.pop(k, None)
+
+        # 4. Clear event store
+        es = self._event_stores.pop(org_id, None)
+        if es:
+            es.clear()
+
+        # 5. Clear blackboard
+        bb = self._blackboards.pop(org_id, None)
+        if bb and hasattr(bb, "clear"):
+            bb.clear()
+
+        # 6. Clear messenger queues
+        messenger = self._messengers.pop(org_id, None)
+        if messenger and hasattr(messenger, "clear_all"):
+            messenger.clear_all()
+
+        # 7. Clear identity / policies caches
+        self._identities.pop(org_id, None)
+        self._policies.pop(org_id, None)
+
+        # 8. Save clean state
+        org.status = OrgStatus.DORMANT
+        org.updated_at = _now_iso()
+        self._manager.update(org_id, org.to_dict())
+
+        logger.info(f"[OrgRuntime] Reset org {org.name} ({org_id})")
+
+        await self._broadcast_ws("org:status_change", {
+            "org_id": org_id, "status": "dormant",
+        })
+
+        return org
+
     async def pause_org(self, org_id: str) -> Organization:
         org = self._active_orgs.get(org_id) or self._manager.get(org_id)
         if not org:

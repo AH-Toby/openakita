@@ -344,6 +344,16 @@ async def resume_org(request: Request, org_id: str):
         raise HTTPException(400, str(e))
 
 
+@router.post("/{org_id}/reset")
+async def reset_org(request: Request, org_id: str):
+    rt = _get_runtime(request)
+    try:
+        org = await rt.reset_org(org_id)
+        return org.to_dict()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 # ---- User commands ----
 
 @router.post("/{org_id}/command")
