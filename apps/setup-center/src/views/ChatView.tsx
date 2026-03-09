@@ -2682,6 +2682,48 @@ export function ChatView({
         setInputText("");
         orgCommandPendingRef.current = true;
         setOrgCommandPending(true);
+
+        const progressLines: string[] = [];
+        const pushProgress = (line: string) => {
+          progressLines.push(line);
+          const preview = progressLines.slice(-8).map(l => `> ${l}`).join("\n");
+          setMessages((prev) => prev.map(m =>
+            m.id === placeholderId ? { ...m, content: preview } : m
+          ));
+        };
+
+        const unsub = onWsEvent((event, raw) => {
+          const d = raw as Record<string, unknown> | null;
+          if (!d || d.org_id !== targetOrgId) return;
+          const nodeId = (d.node_id || d.from_node || "") as string;
+          const toNode = (d.to_node || "") as string;
+          if (event === "org:node_status") {
+            const st = d.status as string;
+            if (st === "busy") {
+              const task = (d.current_task || "") as string;
+              pushProgress(`🟢 **${nodeId}** 开始处理${task ? `：${task.slice(0, 60)}` : ""}`);
+            } else if (st === "idle") {
+              pushProgress(`✅ **${nodeId}** 完成`);
+            } else if (st === "error") {
+              pushProgress(`❌ **${nodeId}** 出错`);
+            }
+          } else if (event === "org:task_delegated") {
+            const task = (d.task || "") as string;
+            pushProgress(`📋 **${nodeId}** → **${toNode}** 分配任务：${(task as string).slice(0, 50)}`);
+          } else if (event === "org:message") {
+            const msgType = d.msg_type as string || "消息";
+            pushProgress(`💬 **${nodeId}** → **${toNode}** ${msgType}`);
+          } else if (event === "org:escalation") {
+            pushProgress(`⬆️ **${nodeId}** 向上汇报`);
+          } else if (event === "org:blackboard_update") {
+            pushProgress(`📝 **${nodeId}** 更新黑板`);
+          } else if (event === "org:task_complete") {
+            pushProgress(`🎯 **${nodeId}** 任务完成`);
+          } else if (event === "org:task_timeout") {
+            pushProgress(`⏰ **${nodeId}** 任务超时`);
+          }
+        });
+
         try {
           const res = await safeFetch(`${apiBaseUrl}/api/orgs/${targetOrgId}/command`, {
             method: "POST",
@@ -2691,9 +2733,12 @@ export function ChatView({
           });
           const data = await res.json();
           const resultText = data.result || data.error || JSON.stringify(data);
+          const progressSummary = progressLines.length > 0
+            ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
+            : "";
           setMessages((prev) => prev.map(m =>
             m.id === placeholderId
-              ? { ...m, content: `**[${orgOrgName}]** ${resultText}`, streaming: false }
+              ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ${resultText}`, streaming: false }
               : m
           ));
         } catch (e: any) {
@@ -2703,6 +2748,7 @@ export function ChatView({
               : m
           ));
         } finally {
+          unsub();
           orgCommandPendingRef.current = false;
           setOrgCommandPending(false);
         }
@@ -4486,7 +4532,7 @@ export function ChatView({
               }}>
                 <IconBuilding size={12} />
                 正在与「{orgList.find(o => o.id === selectedOrgId)?.name}」对话
-                {orgCommandPending && <span style={{ opacity: 0.6 }}> — 处理中...</span>}
+                {orgCommandPending && <span style={{ opacity: 0.6 }}> — 组织协调中，进度实时显示 ↓</span>}
               </div>
             )}
 

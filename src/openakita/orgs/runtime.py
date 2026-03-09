@@ -988,37 +988,38 @@ class OrgRuntime:
         self._manager.save_state(org_id, state)
 
     async def _recover_pending_tasks(self, org: Organization) -> None:
-        """Check for tasks that were interrupted by a restart and reset node states."""
-        saved = self._manager.load_state(org.id)
-        if not saved:
-            return
+        """Reset stale node statuses after a restart.
 
+        After a process restart, in-memory agents are gone. Any node still
+        marked busy/waiting/error in the persisted org.json is stale and must
+        be reset to IDLE so the node can accept new work.  We check the live
+        org object (loaded from org.json) rather than only the state.json
+        snapshot, because state.json is only written during graceful shutdown
+        and may be missing or outdated after a crash.
+        """
+        es = self.get_event_store(org.id)
         recovered_count = 0
-        saved_node_statuses = saved.get("node_statuses", {})
+        stale_statuses = {NodeStatus.BUSY, NodeStatus.WAITING, NodeStatus.ERROR}
 
         for node in org.nodes:
-            prev_status = saved_node_statuses.get(node.id)
-            if prev_status in ("busy", "waiting"):
-                es = self.get_event_store(org.id)
-                pending = es.get_last_pending(node.id)
-
+            if node.status in stale_statuses:
+                prev = node.status.value
                 node.status = NodeStatus.IDLE
+                self._agent_cache.pop(f"{org.id}:{node.id}", None)
                 recovered_count += 1
 
                 es.emit("node_recovered", node.id, {
-                    "previous_status": prev_status,
-                    "had_pending": bool(pending),
+                    "previous_status": prev,
+                    "reason": "restart_cleanup",
                 })
-
-                if pending:
-                    logger.info(
-                        f"[OrgRuntime] Node {node.role_title} was {prev_status}, "
-                        f"reset to idle (pending event: {pending.get('event_type', '?')})"
-                    )
+                logger.info(
+                    f"[OrgRuntime] Node {node.role_title} was {prev}, "
+                    f"reset to idle (restart recovery)"
+                )
 
         if recovered_count > 0:
             self._save_org(org)
-            logger.info(f"[OrgRuntime] Recovered {recovered_count} nodes for {org.name}")
+            logger.info(f"[OrgRuntime] Recovered {recovered_count} stale nodes for {org.name}")
 
     def _evict_expired_agents(self) -> None:
         expired = [k for k, v in self._agent_cache.items() if v.expired]

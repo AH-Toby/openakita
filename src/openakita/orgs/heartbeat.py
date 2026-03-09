@@ -16,7 +16,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from .runtime import OrgRuntime
 
-from .models import Organization, OrgStatus, _now_iso
+from .models import Organization, OrgStatus, NodeStatus, _now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,28 @@ class OrgHeartbeat:
         """Record that an org had activity (called from runtime on task events)."""
         self._last_activity[org_id] = time.monotonic()
         self._tasks_since_review[org_id] = self._tasks_since_review.get(org_id, 0) + 1
+
+    def _recover_error_nodes(self, org: Organization) -> None:
+        """Reset long-stuck ERROR nodes to IDLE during heartbeat.
+
+        Non-root nodes in ERROR may never be activated again, leaving them
+        permanently broken. Each heartbeat clears their agent cache and
+        resets them so they can accept new tasks.
+        """
+        es = self._runtime.get_event_store(org.id)
+        recovered = 0
+        for node in org.nodes:
+            if node.status == NodeStatus.ERROR:
+                node.status = NodeStatus.IDLE
+                self._runtime._agent_cache.pop(f"{org.id}:{node.id}", None)
+                es.emit("node_auto_recovered", node.id, {
+                    "previous_status": "error",
+                    "reason": "heartbeat_recovery",
+                })
+                recovered += 1
+                logger.info(f"[Heartbeat] Auto-recovered ERROR node {node.role_title}")
+        if recovered:
+            self._runtime._save_org(org)
 
     def _compute_adaptive_interval(self, org: Organization) -> float:
         """Compute heartbeat interval based on recent activity level."""
@@ -125,6 +147,8 @@ class OrgHeartbeat:
         roots = org.get_root_nodes()
         if not roots:
             return {"error": "No root nodes"}
+
+        self._recover_error_nodes(org)
 
         es = self._runtime.get_event_store(org.id)
         bb = self._runtime.get_blackboard(org.id)
