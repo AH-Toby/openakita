@@ -202,7 +202,14 @@ a:hover {
 
 .sidebarNav {
   padding: 8px 8px 4px 8px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
+.sidebarNav::-webkit-scrollbar { width: 4px; }
+.sidebarNav::-webkit-scrollbar-track { background: transparent; }
+.sidebarNav::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
+.sidebarNav::-webkit-scrollbar-thumb:hover { background: var(--muted2); }
 
 .navItem {
   display: flex;
@@ -234,7 +241,7 @@ a:hover {
 
 .configSection {
   border-top: 1px solid var(--line);
-  margin-top: auto;
+  flex-shrink: 0;
 }
 
 .configHeader {
