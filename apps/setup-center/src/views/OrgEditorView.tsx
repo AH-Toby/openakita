@@ -43,8 +43,6 @@ import {
   IconChevronRight,
   IconRadar,
   IconSave,
-  IconHeartPulse,
-  IconSun,
   IconInbox,
   IconMaximize2,
   IconSnowflake,
@@ -54,7 +52,6 @@ import {
   IconMenu,
   IconSitemap,
   IconAlertCircle,
-  IconDownload,
   IconUpload,
 } from "../icons";
 import { safeFetch } from "../providers";
@@ -806,7 +803,7 @@ export function OrgEditorView({
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showNewNodeForm, setShowNewNodeForm] = useState(false);
-  const [propsTab, setPropsTab] = useState<"basic" | "identity" | "capabilities" | "advanced" | "live" | "chat" | "tasks">("basic");
+  const [propsTab, setPropsTab] = useState<"overview" | "identity" | "capabilities" | "tasks">("overview");
   const [fullPromptPreview, setFullPromptPreview] = useState<string | null>(null);
   const [promptPreviewLoading, setPromptPreviewLoading] = useState(false);
   const [liveMode, setLiveMode] = useState(true);
@@ -832,9 +829,7 @@ export function OrgEditorView({
   // Activity feed state
   type ActivityEvent = { id: string; time: number; event: string; data: any };
   const [activityFeed, setActivityFeed] = useState<ActivityEvent[]>([]);
-  const [showActivityFeed, setShowActivityFeed] = useState(true);
-  const [bottomTab, setBottomTab] = useState<"activity" | "projects" | "chat">("activity");
-  const [viewMode, setViewMode] = useState<"canvas" | "dashboard">("canvas");
+  const [viewMode, setViewMode] = useState<"canvas" | "projects" | "dashboard">("canvas");
   const [chatPanelOpen, setChatPanelOpen] = useState(false);
   const [chatPanelNode, setChatPanelNode] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; type: "node" | "edge" | "pane"; id: string | null } | null>(null);
@@ -846,7 +841,6 @@ export function OrgEditorView({
     window.addEventListener("scroll", dismiss, true);
     return () => { window.removeEventListener("click", dismiss); window.removeEventListener("scroll", dismiss, true); };
   }, [contextMenu]);
-  const activityFeedRef = useRef<HTMLDivElement>(null);
   const [edgeAnimations, setEdgeAnimations] = useState<Record<string, { color: string; ts: number }>>({});
   const [edgeFlowCounts, setEdgeFlowCounts] = useState<Record<string, number>>({});
 
@@ -1453,7 +1447,7 @@ export function OrgEditorView({
     if (selectedNodeId && selectedNodeId !== node.id) autoSave();
     setSelectedNodeId(node.id);
     setSelectedEdgeId(null);
-    setPropsTab(liveMode ? "live" : "basic");
+    setPropsTab("overview");
     setFullPromptPreview(null);
     setShowRightPanel(true);
   }, [liveMode, selectedNodeId, autoSave]);
@@ -1708,249 +1702,120 @@ export function OrgEditorView({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      {/* ── Toolbar - full width ── */}
+      {/* ── Toolbar - 3-section layout ── */}
       {currentOrg && (
-        <div
-          style={{
-            height: 44,
-            borderBottom: "1px solid var(--line)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "0 12px",
-            background: "var(--bg-app)",
-            flexShrink: 0,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div className="org-topbar">
+          {/* ── Left: Org info ── */}
+          <div className="org-topbar-left">
             <button
-              className="btnSmall"
+              className="org-tb-btn"
               onClick={() => setShowLeftPanel(!showLeftPanel)}
               title="组织列表"
-              style={{ fontSize: 14, minWidth: 32, minHeight: 32 }}
             >
               <IconMenu size={14} />
             </button>
-            <IconBuilding size={16} />
             {!isMobile && (
-            <input
-              style={{
-                border: "none",
-                background: "transparent",
-                fontWeight: 600,
-                fontSize: 14,
-                outline: "none",
-                width: 160,
-                color: "var(--text)",
-              }}
-              value={currentOrg.name}
-              onChange={(e) => setCurrentOrg({ ...currentOrg, name: e.target.value })}
-            />
+              <input
+                className="org-topbar-name"
+                value={currentOrg.name}
+                onChange={(e) => setCurrentOrg({ ...currentOrg, name: e.target.value })}
+              />
             )}
             <span
+              className="org-topbar-status"
               style={{
-                fontSize: 10,
-                padding: "2px 6px",
-                borderRadius: 4,
                 background: `${STATUS_COLORS[currentOrg.status] || "var(--muted)"}20`,
                 color: STATUS_COLORS[currentOrg.status] || "var(--muted)",
-                fontWeight: 600,
               }}
             >
               {currentOrg.status}
             </span>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 1, overflow: "hidden" }}>
-
-            {/* ── 编辑区 ── */}
-            <div className="org-tb-group" data-label="编辑">
-              <button className="btnSmall" onClick={() => setShowNewNodeForm(true)} title="添加节点" style={{ minHeight: 36, whiteSpace: "nowrap" }}>
-                <IconPlus size={12} /> {!isMobile && "节点"}
-              </button>
-              {selectedNodeId && (
-                <button className="btnSmall" onClick={handleDeleteNode} title="删除选中节点" style={{ color: "var(--danger)", minHeight: 36 }}>
-                  <IconTrash size={12} />
-                </button>
-              )}
-              <button className="btnSmall" onClick={handleSave} disabled={saving} style={{ fontWeight: 600 }}>
-                <IconSave size={12} /> {saving ? "..." : (!isMobile && "保存")}
-              </button>
-              <button className="btnSmall" title="自动布局" onClick={() => { setNodes(computeTreeLayout(nodes, edges)); }}>
-                <IconSitemap size={12} /> {!isMobile && "布局"}
-              </button>
-              <button className="btnSmall" onClick={handleExportOrg} title="导出组织配置">
-                <IconDownload size={12} />
-              </button>
-            </div>
-
-            <div className="org-tb-sep" />
-
-            {/* ── 运行控制区 ── */}
-            <div className="org-tb-group" data-label="运行">
-              {currentOrg.status === "archived" ? (
-                <span style={{ fontSize: 11, color: "var(--muted)", padding: "4px 8px" }}>已归档</span>
-              ) : currentOrg.status === "dormant" ? (
-                <button className="btnSmall" onClick={handleStartOrg} style={{ color: "var(--ok)" }}>
-                  <IconPlay size={12} /> 启动
-                </button>
-              ) : (
-                <button className="btnSmall" onClick={handleStopOrg} style={{ color: "var(--danger)" }}>
-                  <IconStop size={12} /> 停止
-                </button>
-              )}
-              <button className="btnSmall" onClick={() => setConfirmReset(true)} title="重置组织">
-                <IconRefresh size={12} />
-              </button>
-              <button
-                className="btnSmall"
-                onClick={() => setLiveMode(!liveMode)}
-                style={{
-                  fontWeight: liveMode ? 600 : 400,
-                  color: liveMode ? "var(--primary)" : undefined,
-                  background: liveMode ? "rgba(14,165,233,0.1)" : undefined,
-                }}
-              >
-                <IconRadar size={12} /> {!isMobile && "实况"}
-              </button>
-            </div>
-
-            <div className="org-tb-sep" />
-
-            {/* ── 视图区 ── */}
-            <div className="org-tb-group" data-label="视图">
-              <button
-                className="btnSmall"
-                onClick={() => { autoSave(); setViewMode(viewMode === "canvas" ? "dashboard" : "canvas"); }}
-                style={{
-                  fontWeight: viewMode === "dashboard" ? 600 : 400,
-                  color: viewMode === "dashboard" ? "#8b5cf6" : undefined,
-                  background: viewMode === "dashboard" ? "rgba(139,92,246,0.1)" : undefined,
-                }}
-                title={viewMode === "canvas" ? "运营看板" : "画布视图"}
-              >
-                <IconClipboard size={12} /> {!isMobile && (viewMode === "canvas" ? "看板" : "画布")}
-              </button>
-              <button
-                className="btnSmall"
-                onClick={() => setShowActivityFeed(!showActivityFeed)}
-                style={{
-                  fontWeight: showActivityFeed ? 600 : 400,
-                  color: showActivityFeed ? "var(--ok)" : undefined,
-                  background: showActivityFeed ? "rgba(34,197,94,0.1)" : undefined,
-                  position: "relative",
-                }}
-              >
-                <IconRadar size={12} /> {!isMobile && "动态"}
-                {activityFeed.length > 0 && !showActivityFeed && (
-                  <span style={{
-                    position: "absolute", top: -2, right: -2,
-                    width: 6, height: 6, borderRadius: "50%",
-                    background: "var(--ok)", animation: "orgDotPulse 1.5s ease-in-out infinite",
-                  }} />
-                )}
-              </button>
-              <button
-                className="btnSmall"
-                onClick={() => setInboxOpen(!inboxOpen)}
-                style={{
-                  fontWeight: inboxOpen ? 600 : 400,
-                  color: inboxOpen ? "var(--primary)" : undefined,
-                  background: inboxOpen ? "rgba(14,165,233,0.1)" : undefined,
-                }}
-              >
-                <IconInbox size={12} /> {!isMobile && "消息"}
-              </button>
-              {!isMobile && (
-                <button
-                  className="btnSmall"
-                  onClick={() => { if (showRightPanel) autoSave(); setShowRightPanel(!showRightPanel); }}
-                  title={showRightPanel ? "收起设置面板" : "展开设置面板"}
-                  style={{
-                    fontWeight: showRightPanel ? 600 : 400,
-                    color: showRightPanel ? "var(--primary)" : undefined,
-                    background: showRightPanel ? "rgba(14,165,233,0.1)" : undefined,
-                  }}
-                >
-                  <IconLayoutGrid size={12} /> {selectedNode || selectedEdge ? "属性" : "设置"}
-                </button>
-              )}
-            </div>
-
-            {/* ── 快捷操作区 (仅 liveMode) ── */}
-            {liveMode && currentOrg && (
-              <>
-                <div className="org-tb-sep" />
-                <div className="org-tb-group" data-label="快捷">
-                  <button
-                    className="btnSmall"
-                    onClick={async () => {
-                      try {
-                        const resp = await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/heartbeat/trigger`, { method: "POST" });
-                        if (!resp.ok) console.error("heartbeat trigger failed:", resp.status);
-                      } catch (e) { console.error("heartbeat trigger error:", e); }
-                    }}
-                    title="手动触发心跳"
-                  >
-                    <IconHeartPulse size={12} /> {!isMobile && "心跳"}
-                  </button>
-                  <button
-                    className="btnSmall"
-                    onClick={async () => {
-                      try {
-                        const resp = await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/standup/trigger`, { method: "POST" });
-                        if (!resp.ok) console.error("standup trigger failed:", resp.status);
-                      } catch (e) { console.error("standup trigger error:", e); }
-                    }}
-                    title="手动触发晨会"
-                  >
-                    <IconSun size={12} /> {!isMobile && "晨会"}
-                  </button>
-                </div>
-              </>
-            )}
-
-            {/* ── 右端：统计 + 独立窗口 ── */}
             {liveMode && orgStats && !isMobile && (
-              <div style={{
-                display: "flex", gap: 8, alignItems: "center",
-                fontSize: 10, color: "#6b7280", marginLeft: 6,
-                padding: "2px 8px", borderRadius: 4,
-                background: "var(--bg-secondary)",
-              }}>
-                <span title="组织健康度" style={{
-                  width: 7, height: 7, borderRadius: "50%",
+              <div className="org-topbar-stats">
+                <span className="org-health-dot" style={{
                   background: orgStats.health === "critical" ? "#ef4444" : orgStats.health === "warning" ? "#f59e0b" : orgStats.health === "attention" ? "#3b82f6" : "#22c55e",
                   animation: orgStats.health !== "healthy" ? "orgDotPulse 1.5s ease-in-out infinite" : undefined,
                 }} />
-                <span title="完成任务数">✓ {orgStats.total_tasks_completed ?? 0}</span>
-                <span title="消息数">✉ {orgStats.total_messages_exchanged ?? 0}</span>
-                {orgStats.pending_messages > 0 && <span title="待处理" style={{ color: "#f59e0b" }}>▪ {orgStats.pending_messages}</span>}
-                {orgStats.anomalies?.length > 0 && <span title="告警数" style={{ color: "#ef4444", fontWeight: 600 }}>! {orgStats.anomalies.length}</span>}
-                {orgStats.uptime_s > 0 && (
-                  <span title="运行时间">
-                    {orgStats.uptime_s >= 3600
-                      ? `${Math.floor(orgStats.uptime_s / 3600)}h${Math.floor((orgStats.uptime_s % 3600) / 60)}m`
-                      : `${Math.floor(orgStats.uptime_s / 60)}m`}
-                  </span>
-                )}
+                <span>✓{orgStats.total_tasks_completed ?? 0}</span>
+                <span>✉{orgStats.total_messages_exchanged ?? 0}</span>
+                {orgStats.pending_messages > 0 && <span style={{ color: "#f59e0b" }}>▪{orgStats.pending_messages}</span>}
+                {orgStats.anomalies?.length > 0 && <span style={{ color: "#ef4444", fontWeight: 600 }}>!{orgStats.anomalies.length}</span>}
               </div>
             )}
-            {canOpenPopupWindow() && (
+          </div>
+
+          {/* ── Center: View tabs ── */}
+          <div className="org-topbar-tabs">
+            {([
+              { key: "canvas" as const, label: "编排", icon: <IconSitemap size={13} /> },
+              { key: "projects" as const, label: "项目", icon: <IconClipboard size={13} /> },
+              { key: "dashboard" as const, label: "看板", icon: <IconRadar size={13} /> },
+            ]).map(v => (
+              <button
+                key={v.key}
+                className={`org-view-tab${viewMode === v.key ? " org-view-tab--active" : ""}`}
+                onClick={() => { if (viewMode !== v.key) { autoSave(); setViewMode(v.key); } }}
+              >
+                {v.icon} {v.label}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Right: Actions ── */}
+          <div className="org-topbar-right">
+            {currentOrg.status === "archived" ? (
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>已归档</span>
+            ) : currentOrg.status === "dormant" ? (
+              <button className="org-tb-btn org-tb-btn--ok" onClick={handleStartOrg} title="启动组织">
+                <IconPlay size={13} /> {!isMobile && "启动"}
+              </button>
+            ) : (
+              <button className="org-tb-btn org-tb-btn--danger" onClick={handleStopOrg} title="停止组织">
+                <IconStop size={13} /> {!isMobile && "停止"}
+              </button>
+            )}
             <button
-              className="btnSmall"
-              onClick={() => {
-                const base = window.location.href.split("#")[0].split("?")[0];
-                openPopupWindow(
-                  `${base}#/org-editor`,
-                  "org-editor-popup",
-                  { width: 1400, height: 900, title: "组织编排" },
-                );
-              }}
-              title="在独立窗口中打开"
+              className={`org-tb-btn${liveMode ? " org-tb-btn--active" : ""}`}
+              onClick={() => setLiveMode(!liveMode)}
+              title="实时模式"
             >
-              <IconMaximize2 size={12} />
+              <IconRadar size={13} /> {!isMobile && "实况"}
             </button>
+            <button className="org-tb-btn" onClick={handleSave} disabled={saving} title="保存">
+              <IconSave size={13} /> {saving ? "..." : (!isMobile && "保存")}
+            </button>
+            <button
+              className={`org-tb-btn${(showRightPanel && !selectedNode && !selectedEdge) ? " org-tb-btn--active" : ""}`}
+              onClick={() => { if (showRightPanel) autoSave(); setShowRightPanel(!showRightPanel); setSelectedNodeId(null); setSelectedEdgeId(null); }}
+              title="组织设置"
+            >
+              <IconLayoutGrid size={13} />
+            </button>
+            <button
+              className="org-tb-btn"
+              onClick={() => setInboxOpen(!inboxOpen)}
+              style={{ position: "relative" }}
+            >
+              <IconInbox size={13} />
+              {activityFeed.length > 0 && (
+                <span className="org-notif-dot" />
+              )}
+            </button>
+            {canOpenPopupWindow() && (
+              <button
+                className="org-tb-btn"
+                onClick={() => {
+                  const base = window.location.href.split("#")[0].split("?")[0];
+                  openPopupWindow(
+                    `${base}#/org-editor`,
+                    "org-editor-popup",
+                    { width: 1400, height: 900, title: "组织编排" },
+                  );
+                }}
+                title="在独立窗口中打开"
+              >
+                <IconMaximize2 size={13} />
+              </button>
             )}
           </div>
         </div>
@@ -2114,44 +1979,44 @@ export function OrgEditorView({
       {/* ── Center: Canvas ── */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Add node dialog */}
-        {showNewNodeForm && (
-          <div
-            style={{
-              padding: 12,
-              borderBottom: "1px solid var(--line)",
-              background: "var(--bg-app)",
-              display: "flex",
-              gap: 8,
-              alignItems: "center",
-            }}
-          >
-            <input
-              className="input"
-              placeholder="岗位名称"
-              value={newNodeTitle}
-              onChange={(e) => setNewNodeTitle(e.target.value)}
-              style={{ flex: 1, fontSize: 13 }}
-              autoFocus
-              onKeyDown={(e) => e.key === "Enter" && handleAddNode()}
-            />
-            <input
-              className="input"
-              placeholder="部门（可选）"
-              value={newNodeDept}
-              onChange={(e) => setNewNodeDept(e.target.value)}
-              style={{ width: 120, fontSize: 13 }}
-              onKeyDown={(e) => e.key === "Enter" && handleAddNode()}
-            />
-            <button className="btnSmall" onClick={handleAddNode}>
-              <IconCheck size={12} />
-            </button>
-            <button className="btnSmall" onClick={() => setShowNewNodeForm(false)}>
-              <IconX size={12} />
-            </button>
-          </div>
+        {showNewNodeForm && createPortal(
+          <div className="org-modal-overlay" onClick={() => setShowNewNodeForm(false)}>
+            <div className="org-modal" onClick={e => e.stopPropagation()} style={{ width: 360 }}>
+              <div className="org-modal-header">
+                <span>添加节点</span>
+                <button className="org-modal-close" onClick={() => setShowNewNodeForm(false)}><IconX size={14} /></button>
+              </div>
+              <div className="org-modal-body">
+                <label className="org-modal-label">岗位名称 *</label>
+                <input
+                  className="input"
+                  placeholder="例如：产品经理"
+                  value={newNodeTitle}
+                  onChange={(e) => setNewNodeTitle(e.target.value)}
+                  style={{ width: "100%", fontSize: 13, marginBottom: 12 }}
+                  autoFocus
+                  onKeyDown={(e) => e.key === "Enter" && handleAddNode()}
+                />
+                <label className="org-modal-label">部门（可选）</label>
+                <input
+                  className="input"
+                  placeholder="例如：技术部"
+                  value={newNodeDept}
+                  onChange={(e) => setNewNodeDept(e.target.value)}
+                  style={{ width: "100%", fontSize: 13 }}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddNode()}
+                />
+              </div>
+              <div className="org-modal-footer">
+                <button className="org-modal-btn" onClick={() => setShowNewNodeForm(false)}>取消</button>
+                <button className="org-modal-btn org-modal-btn--primary" onClick={handleAddNode}>添加</button>
+              </div>
+            </div>
+          </div>,
+          document.body
         )}
 
-        {/* Main content: Canvas / Dashboard / Projects */}
+        {/* Main content: Canvas / Projects / Dashboard */}
         {currentOrg ? (
           <>
           {viewMode === "dashboard" ? (
@@ -2167,13 +2032,27 @@ export function OrgEditorView({
                     setSelectedNodeId(nodeId);
                     setSelectedEdgeId(null);
                     setShowRightPanel(true);
-                    if (liveMode) setPropsTab("live");
+                    setPropsTab("overview");
                   }
                 }}
               />
             </div>
+          ) : viewMode === "projects" ? (
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              {selectedOrgId ? (
+                <OrgProjectBoard
+                  orgId={selectedOrgId}
+                  apiBaseUrl={apiBaseUrl}
+                  nodes={nodes.map(n => ({ id: n.id, role_title: (n.data as any)?.role_title, avatar: (n.data as any)?.avatar }))}
+                />
+              ) : (
+                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)", height: "100%" }}>
+                  请先选择一个组织
+                </div>
+              )}
+            </div>
           ) : (
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, position: "relative" }} onContextMenu={(e) => e.preventDefault()}>
             <ReactFlow
               nodes={nodes}
               edges={edges.map((e) => {
@@ -2196,9 +2075,9 @@ export function OrgEditorView({
               onNodeClick={onNodeClick}
               onEdgeClick={onEdgeClick}
               onPaneClick={onPaneClick}
-              onNodeContextMenu={(e, node) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "node", id: node.id }); }}
-              onEdgeContextMenu={(e, edge) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "edge", id: edge.id }); }}
-              onPaneContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "pane", id: null }); }}
+              onNodeContextMenu={(e, node) => { e.preventDefault(); e.stopPropagation(); setSelectedNodeId(node.id); setSelectedEdgeId(null); setContextMenu({ x: e.clientX, y: e.clientY, type: "node", id: node.id }); }}
+              onEdgeContextMenu={(e, edge) => { e.preventDefault(); e.stopPropagation(); setSelectedEdgeId(edge.id); setSelectedNodeId(null); setContextMenu({ x: e.clientX, y: e.clientY, type: "edge", id: edge.id }); }}
+              onPaneContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, type: "pane", id: null }); }}
               nodeTypes={nodeTypes}
               connectOnClick
               connectionLineStyle={{ stroke: "var(--primary)", strokeWidth: 2, strokeDasharray: "6 3" }}
@@ -2215,6 +2094,22 @@ export function OrgEditorView({
             >
               <Background gap={20} size={1} color="var(--line)" />
               <Controls position="bottom-left" />
+              {/* Canvas-specific toolbar */}
+              <Panel position="top-left">
+                <div className="org-canvas-toolbar">
+                  <button className="org-cvs-btn" onClick={() => setShowNewNodeForm(true)} title="添加节点">
+                    <IconPlus size={13} /> 节点
+                  </button>
+                  <button className="org-cvs-btn" title="自动布局" onClick={() => { setNodes(computeTreeLayout(nodes, edges)); }}>
+                    <IconSitemap size={13} /> 布局
+                  </button>
+                  {selectedNodeId && (
+                    <button className="org-cvs-btn org-cvs-btn--danger" onClick={handleDeleteNode} title="删除选中节点">
+                      <IconTrash size={13} />
+                    </button>
+                  )}
+                </div>
+              </Panel>
               {!isMobile && (
               <MiniMap
                 nodeStrokeWidth={2}
@@ -2238,200 +2133,132 @@ export function OrgEditorView({
               </Panel>
               )}
 
-              {/* ── Context menu ── */}
-              {contextMenu && (
-                <div
-                  className="org-ctx-menu"
-                  style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, zIndex: 1000 }}
-                  onClick={() => setContextMenu(null)}
-                >
-                  {contextMenu.type === "node" && contextMenu.id && (<>
-                    {liveMode && selectedOrgId && (
-                      <button onClick={() => { setChatPanelNode(contextMenu.id); setChatPanelOpen(true); setContextMenu(null); }}>
-                        <span className="org-ctx-icon">💬</span>与该节点对话
-                      </button>
-                    )}
-                    <button onClick={() => ctxCopyNode(contextMenu.id!)}>
-                      <span className="org-ctx-icon">📋</span>复制节点
-                    </button>
-                    <button onClick={() => ctxDeleteNode(contextMenu.id!)}>
-                      <span className="org-ctx-icon" style={{ color: "#ef4444" }}>🗑</span>删除节点
-                    </button>
-                  </>)}
-                  {contextMenu.type === "edge" && contextMenu.id && (<>
-                    <button onClick={() => ctxReverseEdge(contextMenu.id!)}>
-                      <span className="org-ctx-icon">🔄</span>反转方向
-                    </button>
-                    <button onClick={() => ctxDeleteEdge(contextMenu.id!)}>
-                      <span className="org-ctx-icon" style={{ color: "#ef4444" }}>🗑</span>删除连线
-                    </button>
-                  </>)}
-                  {contextMenu.type === "pane" && (<>
-                    <button onClick={() => ctxAddNodeAt()}>
-                      <span className="org-ctx-icon">➕</span>添加节点
-                    </button>
-                    {clipboardNode && (
-                      <button onClick={() => ctxPasteNode()}>
-                        <span className="org-ctx-icon">📌</span>粘贴节点
-                      </button>
-                    )}
-                    <button onClick={() => { setNodes(computeTreeLayout(nodes, edges)); setContextMenu(null); }}>
-                      <span className="org-ctx-icon">🔀</span>自动布局
-                    </button>
-                  </>)}
-                </div>
-              )}
             </ReactFlow>
+            {/* ── Context menu (portal to body to avoid clipping) ── */}
+            {contextMenu && createPortal(
+              <div
+                className="org-ctx-menu"
+                style={{ position: "fixed", left: contextMenu.x, top: contextMenu.y, zIndex: 99999 }}
+                onClick={() => setContextMenu(null)}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                {contextMenu.type === "node" && contextMenu.id && (<>
+                  {liveMode && selectedOrgId && (
+                    <button onClick={() => { setChatPanelNode(contextMenu.id); setChatPanelOpen(true); setContextMenu(null); }}>
+                      <span className="org-ctx-icon">💬</span>与该节点对话
+                    </button>
+                  )}
+                  <button onClick={() => ctxCopyNode(contextMenu.id!)}>
+                    <span className="org-ctx-icon">📋</span>复制节点
+                  </button>
+                  <button onClick={() => ctxDeleteNode(contextMenu.id!)}>
+                    <span className="org-ctx-icon" style={{ color: "#ef4444" }}>🗑</span>删除节点
+                  </button>
+                </>)}
+                {contextMenu.type === "edge" && contextMenu.id && (<>
+                  <button onClick={() => ctxReverseEdge(contextMenu.id!)}>
+                    <span className="org-ctx-icon">🔄</span>反转方向
+                  </button>
+                  <button onClick={() => ctxDeleteEdge(contextMenu.id!)}>
+                    <span className="org-ctx-icon" style={{ color: "#ef4444" }}>🗑</span>删除连线
+                  </button>
+                </>)}
+                {contextMenu.type === "pane" && (<>
+                  <button onClick={() => ctxAddNodeAt()}>
+                    <span className="org-ctx-icon">➕</span>添加节点
+                  </button>
+                  {clipboardNode && (
+                    <button onClick={() => ctxPasteNode()}>
+                      <span className="org-ctx-icon">📌</span>粘贴节点
+                    </button>
+                  )}
+                  <button onClick={() => { setNodes(computeTreeLayout(nodes, edges)); setContextMenu(null); }}>
+                    <span className="org-ctx-icon">🔀</span>自动布局
+                  </button>
+                </>)}
+              </div>,
+              document.body
+            )}
+            {/* ── Canvas bottom: live activity feed ── */}
+            {liveMode && orgStats && (() => {
+              const perNode: any[] = orgStats.per_node || [];
+              const recentTasks: any[] = orgStats.recent_tasks || [];
+              const anomalies: any[] = orgStats.anomalies || [];
+              const nodeLabel = (id: string) => {
+                const nd = nodes.find(n => n.id === id);
+                return (nd?.data as any)?.role_title || id?.slice(0, 6) || id || "?";
+              };
+              const typeIcon: Record<string, string> = {
+                task_delegated: "📤", task_delivered: "📦", task_accepted: "✅",
+                task_rejected: "↩️", task_timeout: "⏰",
+              };
+              const typeLabel: Record<string, string> = {
+                task_delegated: "分配任务", task_delivered: "交付成果",
+                task_accepted: "验收通过", task_rejected: "打回",
+                task_timeout: "超时",
+              };
+
+              const busyLines: { key: string; node: string; text: string; pct: number; color: string }[] = [];
+              for (const n of perNode) {
+                if (n.status !== "busy" && !n.current_task_title) continue;
+                const pp = n.plan_progress || {};
+                const pct = pp.total > 0 ? Math.round((pp.completed / pp.total) * 100) : -1;
+                const taskDesc = n.current_task_title || (n.current_task ? String(n.current_task).slice(0, 50) : "执行中…");
+                busyLines.push({ key: n.id, node: n.role_title || nodeLabel(n.id), text: taskDesc, pct, color: "#3b82f6" });
+              }
+
+              if (busyLines.length === 0 && recentTasks.length === 0 && anomalies.length === 0) return null;
+
+              return (
+                <div className="org-live-feed">
+                  {busyLines.map(b => (
+                    <div key={b.key} className="org-feed-item org-feed-busy" onClick={() => {
+                      setSelectedNodeId(b.key); setSelectedEdgeId(null); setShowRightPanel(true); setPropsTab("tasks");
+                    }}>
+                      <span className="org-feed-dot" style={{ background: b.color, animation: "orgDotPulse 1.5s ease-in-out infinite" }} />
+                      <span className="org-feed-who">{b.node}</span>
+                      <span className="org-feed-text">{b.text}</span>
+                      {b.pct >= 0 && (
+                        <span className="org-feed-progress">
+                          <span className="org-feed-bar"><span className="org-feed-bar-fill" style={{ width: `${b.pct}%` }} /></span>
+                          <span className="org-feed-pct">{b.pct}%</span>
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                  {recentTasks.slice(0, 6).map((t: any, i: number) => {
+                    const ts = t.t ? new Date(typeof t.t === "number" && t.t < 1e12 ? t.t * 1000 : t.t) : null;
+                    const timeStr = ts ? `${String(ts.getHours()).padStart(2, "0")}:${String(ts.getMinutes()).padStart(2, "0")}` : "";
+                    const icon = typeIcon[t.type] || "📋";
+                    const label = typeLabel[t.type] || t.type;
+                    const statusCls = t.status === "accepted" ? "org-feed-ok" : t.status === "rejected" ? "org-feed-err" : "";
+                    return (
+                      <div key={`rt-${i}`} className={`org-feed-item ${statusCls}`}>
+                        <span className="org-feed-time">{timeStr}</span>
+                        <span className="org-feed-icon">{icon}</span>
+                        <span className="org-feed-who">{nodeLabel(t.from)}</span>
+                        <span className="org-feed-arrow">→</span>
+                        <span className="org-feed-who">{nodeLabel(t.to)}</span>
+                        <span className="org-feed-label">{label}</span>
+                        {t.task && <span className="org-feed-text">{t.task.slice(0, 40)}{t.task.length > 40 ? "…" : ""}</span>}
+                      </div>
+                    );
+                  })}
+                  {anomalies.map((a: any, i: number) => (
+                    <div key={`an-${i}`} className="org-feed-item org-feed-warn">
+                      <span className="org-feed-icon">⚠</span>
+                      <span className="org-feed-who" style={{ color: "#f59e0b" }}>{a.role_title || nodeLabel(a.node_id)}</span>
+                      <span className="org-feed-text" style={{ color: "#f59e0b" }}>{String(a.message).slice(0, 50)}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
           )}
 
-          {/* Bottom Panel: Activity Feed + Org Chat */}
-          {liveMode && showActivityFeed && (
-            <div style={{
-              height: bottomTab === "projects" ? 280 : 200,
-              borderTop: "1px solid var(--line)", background: "var(--bg-app)",
-              flexShrink: 0, fontSize: 11, display: "flex", flexDirection: "column",
-              transition: "height 0.2s ease",
-            }}>
-              {/* Bottom panel tab bar */}
-              <div style={{ padding: "0 10px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--line)", background: "var(--bg-app)", zIndex: 1, flexShrink: 0 }}>
-                <div style={{ display: "flex", gap: 0 }}>
-                  {(["activity", "projects", "chat"] as const).map(tab => (
-                    <button key={tab} className="btnSmall" onClick={() => setBottomTab(tab)} style={{
-                      fontSize: 11, fontWeight: bottomTab === tab ? 600 : 400, padding: "6px 12px",
-                      borderBottom: bottomTab === tab ? "2px solid var(--accent)" : "2px solid transparent",
-                      color: bottomTab === tab ? "var(--accent)" : "var(--muted)",
-                      background: "transparent", border: "none", borderRadius: 0, cursor: "pointer",
-                    }}>
-                      {tab === "activity" ? "活动流" : tab === "projects" ? "项目" : "组织对话"}
-                    </button>
-                  ))}
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {bottomTab === "activity" && (
-                    <button className="btnSmall" onClick={() => setActivityFeed([])} style={{ fontSize: 10 }}>清空</button>
-                  )}
-                  <button className="btnSmall" onClick={() => setShowActivityFeed(false)} style={{ fontSize: 10 }}><IconX size={10} /></button>
-                </div>
-              </div>
-
-              {/* Activity tab */}
-              {bottomTab === "activity" && (
-              <div style={{ flex: 1, overflowY: "auto" }} ref={activityFeedRef}>
-              {activityFeed.length === 0 ? (
-                <div style={{ padding: 12, color: "var(--muted)", textAlign: "center" }}>等待活动...</div>
-              ) : (
-                activityFeed.map((ev) => {
-                  const ts = fmtTime(ev.time);
-                  const nodeLabel = (id: string) => {
-                    const n = nodes.find((n) => n.id === id);
-                    return (n?.data as any)?.role_title || id?.slice(0, 8) || "?";
-                  };
-                  let icon = "●";
-                  let color = "var(--muted)";
-                  let text = ev.event;
-
-                  if (ev.event === "org:task_delegated") {
-                    icon = "→"; color = "var(--primary)";
-                    text = `${nodeLabel(ev.data.from_node)} → ${nodeLabel(ev.data.to_node)}：委派「${ev.data.task?.slice(0, 40) || ""}」`;
-                  } else if (ev.event === "org:task_delivered") {
-                    icon = "◆"; color = "var(--ok)";
-                    text = `${nodeLabel(ev.data.from_node)} → ${nodeLabel(ev.data.to_node)}：提交交付物`;
-                  } else if (ev.event === "org:task_accepted") {
-                    icon = "✓"; color = "#22c55e";
-                    text = `${nodeLabel(ev.data.accepted_by)} 验收通过 ${nodeLabel(ev.data.from_node)} 的交付`;
-                  } else if (ev.event === "org:task_rejected") {
-                    icon = "✗"; color = "var(--danger)";
-                    text = `${nodeLabel(ev.data.rejected_by)} 打回 ${nodeLabel(ev.data.from_node)}：${ev.data.reason?.slice(0, 30) || ""}`;
-                  } else if (ev.event === "org:escalation") {
-                    icon = "⬆"; color = "var(--danger)";
-                    text = `${nodeLabel(ev.data.from_node)} 上报：${ev.data.content?.slice(0, 40) || ""}`;
-                  } else if (ev.event === "org:message") {
-                    icon = "▸"; color = "#a78bfa";
-                    text = `${nodeLabel(ev.data.from_node)} → ${nodeLabel(ev.data.to_node)}：${ev.data.content?.slice(0, 40) || ""}`;
-                  } else if (ev.event === "org:broadcast") {
-                    icon = "◉"; color = "#8b5cf6";
-                    text = `${nodeLabel(ev.data.from_node)} ${ev.data.scope === "department" ? "部门" : "全组织"}广播：${ev.data.content?.slice(0, 40) || ""}`;
-                  } else if (ev.event === "org:blackboard_update") {
-                    icon = "▪"; color = "#f59e0b";
-                    text = `${nodeLabel(ev.data.node_id)} 写入${ev.data.scope === "department" ? "部门" : "组织"}黑板`;
-                  } else if (ev.event === "org:heartbeat_start") {
-                    icon = "♥"; color = "#ec4899";
-                    text = `${ev.data.type === "standup" ? "晨会" : "经营复盘"}开始...`;
-                  } else if (ev.event === "org:heartbeat_done") {
-                    icon = "♥"; color = "#ec4899";
-                    text = `${ev.data.type === "standup" ? "晨会" : "复盘"}完成`;
-                  } else if (ev.event === "org:task_complete") {
-                    icon = "✔"; color = "#22c55e";
-                    text = `${nodeLabel(ev.data.node_id)} 完成任务`;
-                  } else if (ev.event === "org:meeting_started") {
-                    icon = "■"; color = "#6366f1";
-                    text = `会议开始：${ev.data.topic?.slice(0, 40) || ""}（${ev.data.participants?.length || 0} 人参会）`;
-                  } else if (ev.event === "org:meeting_round") {
-                    icon = "↻"; color = "#6366f1";
-                    text = `会议进入第 ${ev.data.round}/${ev.data.total_rounds} 轮`;
-                  } else if (ev.event === "org:meeting_speak") {
-                    icon = "♪"; color = "#8b5cf6";
-                    text = `${ev.data.role_title || nodeLabel(ev.data.node_id)} 发言：${ev.data.content?.slice(0, 60) || ""}`;
-                  } else if (ev.event === "org:meeting_completed") {
-                    icon = "✔"; color = "#22c55e";
-                    text = `会议结束：${ev.data.topic?.slice(0, 40) || ""}`;
-                  } else if (ev.event === "org:task_timeout") {
-                    icon = "⌛"; color = "#f97316";
-                    text = `${nodeLabel(ev.data.node_id)} 任务超时 (${ev.data.timeout_s || ""}s)`;
-                  } else if (ev.event === "org:node_status" && ev.data.status === "busy") {
-                    icon = "▶"; color = "var(--primary)";
-                    text = `${nodeLabel(ev.data.node_id)} 开始执行`;
-                  } else if (ev.event === "org:node_status" && ev.data.status === "error") {
-                    icon = "✖"; color = "var(--danger)";
-                    text = `${nodeLabel(ev.data.node_id)} 执行出错`;
-                  }
-
-                  return (
-                    <div key={ev.id} style={{ padding: "3px 10px", display: "flex", gap: 6, alignItems: "flex-start", borderBottom: "1px solid var(--line)" }}>
-                      <span style={{ color: "var(--muted)", fontFamily: "monospace", flexShrink: 0, fontSize: 10 }}>{ts}</span>
-                      <span style={{ color, flexShrink: 0 }}>{icon}</span>
-                      <span style={{ color: "var(--text)", flex: 1, wordBreak: "break-all" }}>{text}</span>
-                    </div>
-                  );
-                })
-              )}
-              </div>
-              )}
-
-              {/* Projects tab */}
-              {bottomTab === "projects" && selectedOrgId && (
-                <div style={{ flex: 1, overflow: "hidden" }}>
-                  <OrgProjectBoard
-                    orgId={selectedOrgId}
-                    apiBaseUrl={apiBaseUrl}
-                    nodes={nodes.map(n => ({ id: n.id, role_title: (n.data as any)?.role_title, avatar: (n.data as any)?.avatar }))}
-                    compact
-                  />
-                </div>
-              )}
-              {bottomTab === "projects" && !selectedOrgId && (
-                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)" }}>
-                  请先选择一个组织
-                </div>
-              )}
-
-              {/* Chat tab */}
-              {bottomTab === "chat" && selectedOrgId && (
-                <div style={{ flex: 1, overflow: "hidden" }}>
-                  <OrgChatPanel orgId={selectedOrgId} apiBaseUrl={apiBaseUrl} compact />
-                </div>
-              )}
-              {bottomTab === "chat" && !selectedOrgId && (
-                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)" }}>
-                  请先选择一个组织
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ═══ Floating Chat FAB ═══ */}
-          {liveMode && selectedOrgId && !chatPanelOpen && (
+          {/* ═══ Floating Chat FAB (always visible when org selected) ═══ */}
+          {selectedOrgId && !chatPanelOpen && (
             <button
               onClick={() => { setChatPanelNode(null); setChatPanelOpen(true); }}
               className="org-chat-fab"
@@ -2473,11 +2300,12 @@ export function OrgEditorView({
               position: absolute; bottom: 20px; right: 20px; z-index: 40;
               display: flex; align-items: center; gap: 8px;
               padding: 12px 20px; border: none; border-radius: 16px;
-              background: linear-gradient(135deg, #3b82f6, #6366f1);
-              color: #fff; cursor: pointer; font-size: 13px; font-weight: 600;
+              background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
+              color: #ffffff !important; cursor: pointer; font-size: 13px; font-weight: 600;
               box-shadow: 0 4px 20px rgba(99,102,241,0.4), 0 0 40px rgba(99,102,241,0.15);
               transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
               animation: org-fab-in 0.4s cubic-bezier(0.34,1.56,0.64,1);
+              -webkit-text-fill-color: #ffffff !important;
             }
             @keyframes org-fab-in {
               from { transform: scale(0.5) translateY(20px); opacity: 0; }
@@ -2485,10 +2313,14 @@ export function OrgEditorView({
             }
             .org-chat-fab:hover {
               transform: translateY(-2px) scale(1.02);
-              box-shadow: 0 6px 28px rgba(99,102,241,0.5), 0 0 60px rgba(99,102,241,0.2);
+              background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
+              color: #ffffff !important;
+              -webkit-text-fill-color: #ffffff !important;
+              box-shadow: 0 6px 28px rgba(99,102,241,0.6), 0 0 60px rgba(99,102,241,0.25);
             }
             .org-chat-fab:active { transform: scale(0.97); }
-            .org-chat-fab-label { letter-spacing: 0.5px; }
+            .org-chat-fab svg { stroke: #ffffff !important; }
+            .org-chat-fab-label { letter-spacing: 0.5px; color: #ffffff !important; -webkit-text-fill-color: #ffffff !important; }
 
             .org-chat-overlay {
               position: absolute; inset: 0; z-index: 80;
@@ -2529,16 +2361,235 @@ export function OrgEditorView({
             .org-ctx-menu button:hover { background: var(--hover-bg, rgba(99,102,241,0.15)); }
             .org-ctx-icon { width: 18px; text-align: center; flex-shrink: 0; font-size: 14px; }
 
-            .org-tb-group {
-              display: flex; align-items: center; gap: 4px;
-              padding: 2px 4px; border-radius: 6px;
-              background: var(--bg-secondary, rgba(30,41,59,0.4));
+            /* ── Top bar layout ── */
+            .org-topbar {
+              height: 44px;
+              border-bottom: 1px solid var(--line, rgba(51,65,85,0.5));
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              padding: 0 10px;
+              background: var(--bg-app, #0f172a);
+              flex-shrink: 0;
+              gap: 8px;
+            }
+            .org-topbar-left {
+              display: flex; align-items: center; gap: 6px;
+              flex-shrink: 1; min-width: 0; overflow: hidden;
+            }
+            .org-topbar-name {
+              border: none; background: transparent;
+              font-weight: 600; font-size: 14px;
+              outline: none; width: 140px;
+              color: var(--text, #e2e8f0);
+            }
+            .org-topbar-status {
+              font-size: 10px; padding: 2px 6px; border-radius: 4px;
+              font-weight: 600; white-space: nowrap; flex-shrink: 0;
+            }
+            .org-topbar-stats {
+              display: flex; gap: 5px; align-items: center;
+              font-size: 10px; color: var(--muted, #6b7280);
+              flex-shrink: 0;
+            }
+            .org-health-dot {
+              width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+            }
+
+            /* ── View tabs (center) ── */
+            .org-topbar-tabs {
+              display: flex; align-items: center; gap: 0;
+              border-bottom: 2px solid transparent;
+              flex-shrink: 0;
+            }
+            .org-view-tab {
+              display: inline-flex; align-items: center; gap: 5px;
+              height: 32px; padding: 0 16px;
+              border: none; background: transparent;
+              border-bottom: 2px solid transparent;
+              margin-bottom: -1px;
+              color: var(--muted, #94a3b8); font-size: 13px; font-weight: 500;
+              cursor: pointer; white-space: nowrap;
+              transition: color 0.15s, border-color 0.15s;
+            }
+            .org-view-tab:hover { color: var(--text, #e2e8f0); }
+            .org-view-tab--active {
+              color: var(--primary, #6366f1) !important; font-weight: 600;
+              border-bottom-color: var(--primary, #6366f1) !important;
+            }
+
+            /* ── Right actions ── */
+            .org-topbar-right {
+              display: flex; align-items: center; gap: 3px; flex-shrink: 0;
+            }
+            .org-tb-btn {
+              display: inline-flex; align-items: center; gap: 4px;
+              height: 28px; padding: 0 8px; border-radius: 6px;
+              border: 1px solid var(--line, rgba(51,65,85,0.5));
+              background: transparent;
+              color: var(--text, #e2e8f0);
+              font-size: 12px; cursor: pointer; white-space: nowrap;
+              transition: background 0.15s, color 0.15s, border-color 0.15s;
               position: relative;
             }
-            .org-tb-sep {
-              width: 1px; height: 22px; background: var(--line);
-              flex-shrink: 0; margin: 0 2px;
+            .org-tb-btn:hover {
+              background: var(--hover-bg, rgba(99,102,241,0.12));
+              border-color: rgba(99,102,241,0.3);
             }
+            .org-tb-btn:active { background: rgba(99,102,241,0.2); }
+            .org-tb-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+            .org-tb-btn--active {
+              color: var(--primary, #6366f1); font-weight: 600;
+              background: rgba(99,102,241,0.12);
+              border-color: rgba(99,102,241,0.35);
+            }
+            .org-tb-btn--ok { color: #22c55e; border-color: rgba(34,197,94,0.3); }
+            .org-tb-btn--ok:hover { background: rgba(34,197,94,0.12); }
+            .org-tb-btn--danger { color: #ef4444; border-color: rgba(239,68,68,0.3); }
+            .org-tb-btn--danger:hover { background: rgba(239,68,68,0.12); }
+            .org-notif-dot {
+              position: absolute; top: 3px; right: 3px;
+              width: 5px; height: 5px; border-radius: 50%;
+              background: var(--ok, #22c55e);
+              animation: orgDotPulse 1.5s ease-in-out infinite;
+            }
+
+            /* ── Canvas toolbar (inside ReactFlow) ── */
+            .org-canvas-toolbar {
+              display: flex; align-items: center; gap: 4px;
+              background: var(--card-bg, rgba(30,41,59,0.9));
+              border: 1px solid var(--line, rgba(51,65,85,0.5));
+              border-radius: 8px; padding: 3px 4px;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+              backdrop-filter: blur(8px);
+            }
+            .org-cvs-btn {
+              display: inline-flex; align-items: center; gap: 4px;
+              height: 26px; padding: 0 10px; border-radius: 5px;
+              border: none; background: transparent;
+              color: var(--text, #e2e8f0); font-size: 11px;
+              cursor: pointer; white-space: nowrap;
+              transition: background 0.15s;
+            }
+            .org-cvs-btn:hover { background: rgba(99,102,241,0.15); }
+            .org-cvs-btn--danger { color: #ef4444; }
+            .org-cvs-btn--danger:hover { background: rgba(239,68,68,0.15); }
+
+            .org-tb-stats {
+              display: flex; gap: 6px; align-items: center;
+              font-size: 10px; color: var(--muted, #6b7280);
+              padding: 0 4px;
+            }
+
+            /* ── Canvas bottom live activity feed ── */
+            .org-live-feed {
+              position: absolute; bottom: 0; left: 0; right: 0;
+              z-index: 5; max-height: 140px; overflow-y: auto;
+              background: linear-gradient(to top, var(--bg-app, rgba(15,23,42,0.97)) 75%, transparent);
+              padding: 10px 14px 6px;
+              scrollbar-width: thin;
+            }
+            .org-feed-item {
+              display: flex; align-items: center; gap: 6px;
+              padding: 3px 0; font-size: 11px; color: var(--text, #cbd5e1);
+              line-height: 1.4; white-space: nowrap;
+              border-bottom: 1px solid rgba(51,65,85,0.15);
+            }
+            .org-feed-item:last-child { border-bottom: none; }
+            .org-feed-busy { cursor: pointer; }
+            .org-feed-busy:hover .org-feed-who { color: var(--primary, #6366f1); }
+            .org-feed-ok { }
+            .org-feed-err .org-feed-label { color: #ef4444; }
+            .org-feed-warn { color: #f59e0b; }
+            .org-feed-dot {
+              width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+            }
+            .org-feed-time {
+              font-size: 10px; color: var(--muted, #64748b); font-family: monospace;
+              flex-shrink: 0; min-width: 36px;
+            }
+            .org-feed-icon { flex-shrink: 0; font-size: 12px; }
+            .org-feed-who {
+              font-weight: 600; color: var(--text, #e2e8f0); flex-shrink: 0;
+              max-width: 100px; overflow: hidden; text-overflow: ellipsis;
+              transition: color 0.15s;
+            }
+            .org-feed-arrow { color: var(--muted, #64748b); flex-shrink: 0; font-size: 10px; }
+            .org-feed-label {
+              font-size: 10px; padding: 1px 5px; border-radius: 3px;
+              background: rgba(99,102,241,0.12); color: var(--primary, #818cf8);
+              flex-shrink: 0;
+            }
+            .org-feed-text {
+              color: var(--muted, #94a3b8); font-size: 10px;
+              overflow: hidden; text-overflow: ellipsis; min-width: 0;
+            }
+            .org-feed-progress {
+              display: inline-flex; align-items: center; gap: 4px;
+              flex-shrink: 0;
+            }
+            .org-feed-bar {
+              width: 48px; height: 3px; border-radius: 2px;
+              background: rgba(51,65,85,0.3); overflow: hidden;
+            }
+            .org-feed-bar-fill {
+              height: 100%; border-radius: 2px;
+              background: #3b82f6; transition: width 0.3s ease;
+            }
+            .org-feed-pct {
+              font-size: 9px; color: var(--muted); font-weight: 600;
+            }
+
+            /* ── Modal dialog ── */
+            .org-modal-overlay {
+              position: fixed; inset: 0; z-index: 10000;
+              background: rgba(0,0,0,0.45);
+              backdrop-filter: blur(3px);
+              display: flex; align-items: center; justify-content: center;
+              animation: org-overlay-in 0.15s ease;
+            }
+            .org-modal {
+              background: var(--bg-app, #0f172a);
+              border: 1px solid var(--line, rgba(51,65,85,0.6));
+              border-radius: 12px;
+              box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+              min-width: 300px; max-width: 90vw;
+              animation: org-ctx-in 0.2s ease;
+            }
+            .org-modal-header {
+              display: flex; justify-content: space-between; align-items: center;
+              padding: 14px 16px 10px;
+              font-weight: 600; font-size: 14px; color: var(--text, #e2e8f0);
+            }
+            .org-modal-close {
+              background: none; border: none; color: var(--muted, #94a3b8);
+              cursor: pointer; padding: 4px; border-radius: 4px;
+              transition: color 0.15s;
+            }
+            .org-modal-close:hover { color: var(--text, #e2e8f0); }
+            .org-modal-body { padding: 0 16px 12px; }
+            .org-modal-label {
+              display: block; font-size: 11px; font-weight: 500;
+              color: var(--muted, #94a3b8); margin-bottom: 4px;
+            }
+            .org-modal-footer {
+              display: flex; justify-content: flex-end; gap: 8px;
+              padding: 10px 16px 14px;
+              border-top: 1px solid var(--line, rgba(51,65,85,0.4));
+            }
+            .org-modal-btn {
+              height: 32px; padding: 0 16px; border-radius: 6px;
+              border: 1px solid var(--line, rgba(51,65,85,0.5));
+              background: transparent; color: var(--text, #e2e8f0);
+              font-size: 12px; cursor: pointer;
+              transition: background 0.15s;
+            }
+            .org-modal-btn:hover { background: rgba(99,102,241,0.1); }
+            .org-modal-btn--primary {
+              background: var(--primary, #6366f1); color: #fff;
+              border-color: var(--primary, #6366f1);
+            }
+            .org-modal-btn--primary:hover { background: #4f46e5; }
           `}</style>
           </>
         ) : (
@@ -2610,15 +2661,12 @@ export function OrgEditorView({
             </div>
           </div>
 
-          {/* Tabs */}
-          <div style={{ display: "flex", borderBottom: "1px solid var(--line)", flexWrap: "wrap" }}>
-            {(liveMode
-              ? (["live", "chat", "tasks", "basic", "identity", "capabilities", "advanced"] as const)
-              : (["basic", "identity", "capabilities", "advanced", "tasks"] as const)
-            ).map((tab) => (
+          {/* Tabs - simplified 4 tabs */}
+          <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
+            {(["overview", "identity", "capabilities", "tasks"] as const).map((tab) => (
               <button
                 key={tab}
-                onClick={() => setPropsTab(tab)}
+                onClick={() => setPropsTab(tab as any)}
                 style={{
                   flex: 1,
                   minWidth: 44,
@@ -2634,13 +2682,13 @@ export function OrgEditorView({
                   cursor: "pointer",
                 }}
               >
-                {tab === "live" ? "实况" : tab === "chat" ? "对话" : tab === "tasks" ? "任务" : tab === "basic" ? "基本" : tab === "identity" ? "身份" : tab === "capabilities" ? "能力" : "高级"}
+                {tab === "overview" ? "概览" : tab === "identity" ? "身份" : tab === "capabilities" ? "能力" : "任务"}
               </button>
             ))}
           </div>
 
           <div style={{ padding: 12 }}>
-            {propsTab === "live" && liveMode && (
+            {propsTab === "overview" && liveMode && (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 {/* Node status summary */}
                 <div className="card" style={{ padding: 10 }}>
@@ -2916,7 +2964,7 @@ export function OrgEditorView({
             )}
 
             {/* ── Org-level stats dashboard (live mode, no node selected) ── */}
-            {propsTab === "live" && liveMode && !selectedNodeId && orgStats && (
+            {propsTab === "overview" && liveMode && !selectedNodeId && orgStats && (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
                 {/* Health indicator */}
@@ -3083,7 +3131,7 @@ export function OrgEditorView({
               </div>
             )}
 
-            {propsTab === "basic" && (
+            {propsTab === "overview" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <label style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)" }}>头像</label>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -3739,7 +3787,7 @@ export function OrgEditorView({
               </div>
             )}
 
-            {propsTab === "advanced" && (
+            {propsTab === "capabilities" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 {/* Performance section */}
                 <div style={{
@@ -3892,7 +3940,7 @@ export function OrgEditorView({
               </div>
             )}
 
-            {propsTab === "chat" && liveMode && selectedOrgId && (
+            {propsTab === "tasks" && liveMode && selectedOrgId && (
               <div style={{ height: 360 }}>
                 <OrgChatPanel
                   orgId={selectedOrgId}
@@ -4250,6 +4298,27 @@ export function OrgEditorView({
                 </div>
               </div>
             )}
+          </div>
+
+          {/* ── Quick actions ── */}
+          <div className="card" style={{ padding: 10, marginBottom: 10 }}>
+            <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6 }}>操作</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              <button className="btnSmall" style={{ fontSize: 10, padding: "4px 8px" }} onClick={() => setConfirmReset(true)}>重置组织</button>
+              <button className="btnSmall" style={{ fontSize: 10, padding: "4px 8px" }} onClick={handleExportOrg}>导出配置</button>
+              <label className="btnSmall" style={{ fontSize: 10, padding: "4px 8px", cursor: "pointer" }}>
+                导入配置
+                <input type="file" accept=".json" style={{ display: "none" }} onChange={handleImportOrg} />
+              </label>
+              {liveMode && (<>
+                <button className="btnSmall" style={{ fontSize: 10, padding: "4px 8px" }} onClick={async () => {
+                  try { await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/heartbeat/trigger`, { method: "POST" }); } catch {}
+                }}>触发心跳</button>
+                <button className="btnSmall" style={{ fontSize: 10, padding: "4px 8px" }} onClick={async () => {
+                  try { await safeFetch(`${apiBaseUrl}/api/orgs/${currentOrg.id}/standup/trigger`, { method: "POST" }); } catch {}
+                }}>触发晨会</button>
+              </>)}
+            </div>
           </div>
 
           {/* ── Blackboard ── */}

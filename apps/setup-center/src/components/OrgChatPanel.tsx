@@ -404,7 +404,8 @@ const CHAT_CSS = `
   cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center;
   transition: all 0.15s;
 }
-.ocp-close:hover { background: rgba(239,68,68,0.1); color: #ef4444; }
+.ocp-close:hover { background: rgba(239,68,68,0.1); color: #ef4444 !important; -webkit-text-fill-color: #ef4444 !important; }
+.ocp-close:hover svg { stroke: #ef4444 !important; }
 
 /* ─── Messages ─── */
 .ocp-messages {
@@ -485,14 +486,21 @@ const CHAT_CSS = `
 
 .ocp-send {
   width: 40px; height: 40px; border: none; border-radius: 10px;
-  background: linear-gradient(135deg, #3b82f6, #6366f1);
-  color: #fff; cursor: pointer; flex-shrink: 0;
+  background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
+  color: #ffffff !important; -webkit-text-fill-color: #ffffff !important;
+  cursor: pointer; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   transition: all 0.2s; box-shadow: 0 2px 8px rgba(99,102,241,0.3);
 }
-.ocp-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(99,102,241,0.4); }
+.ocp-send svg { stroke: #ffffff !important; }
+.ocp-send:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: linear-gradient(135deg, #2563eb, #4f46e5) !important;
+  color: #ffffff !important; -webkit-text-fill-color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(99,102,241,0.5);
+}
 .ocp-send:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
-.ocp-send-busy { background: linear-gradient(135deg, #f59e0b, #f97316); }
+.ocp-send-busy { background: linear-gradient(135deg, #f59e0b, #f97316) !important; }
 
 .ocp-send-spinner {
   width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3);
