@@ -468,6 +468,13 @@ export function DotYellow(p: { size?: number }) {
   );
 }
 
+export function DotBlueProcessing(p: { size?: number }) {
+  const s = p.size ?? 8;
+  return (
+    <span className="dotProcessing" style={{ width: s, height: s }} />
+  );
+}
+
 export function IconLink(p: IconProps = {}) {
   return svg(p, <>
     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />

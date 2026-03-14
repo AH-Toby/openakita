@@ -7824,7 +7824,7 @@ export function App() {
     }
     if (view === "scheduler") {
       return (
-        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+        <div>
           {_disableToggle("scheduler", t("scheduler.title"))}
           {disabledViews.includes("scheduler") ? (
             <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
@@ -8289,11 +8289,7 @@ export function App() {
               }}
             />
           </div>
-          <div className="content" style={{
-            display: view !== "chat" ? "flex" : "none",
-            flexDirection: "column",
-            flex: 1, minHeight: 0,
-          }}>
+          <div className="content" style={{ display: view !== "chat" ? undefined : "none", flex: 1, minHeight: 0 }}>
             {renderStepContent()}
           </div>
         </div>
