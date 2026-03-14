@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  IconCalendar,
   IconClock,
   DotGreen, DotGray, DotYellow, DotRed,
 } from "../icons";
@@ -696,24 +695,7 @@ export function SchedulerView({ serviceRunning, apiBaseUrl = "" }: { serviceRunn
 
   return (
     <div>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-        <h2 className="flex items-center gap-2 text-lg font-semibold m-0">
-          <IconCalendar size={20} />
-          {t("scheduler.title")}
-        </h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          <Button variant="outline" size="sm" onClick={() => fetchTasks()} disabled={loading}>
-            {loading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
-            {t("scheduler.refresh")}
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus size={14} /> {t("scheduler.addTask")}
-          </Button>
-        </div>
-      </div>
-
-      {/* Tabs + Search */}
+      {/* Header: Tabs + Search + Actions */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <ToggleGroup
           type="single"
@@ -731,14 +713,23 @@ export function SchedulerView({ serviceRunning, apiBaseUrl = "" }: { serviceRunn
             {t("scheduler.tabAll")} {countBadge(tabCounts.all, "all")}
           </ToggleGroupItem>
         </ToggleGroup>
-        <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-          <Input
-            placeholder={t("scheduler.searchPlaceholder")}
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="pl-8 h-8 w-44 text-xs"
-          />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+            <Input
+              placeholder={t("scheduler.searchPlaceholder")}
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="pl-8 h-8 w-44 text-xs"
+            />
+          </div>
+          <Button variant="outline" size="sm" onClick={() => fetchTasks()} disabled={loading}>
+            {loading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+            {t("scheduler.refresh")}
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus size={14} /> {t("scheduler.addTask")}
+          </Button>
         </div>
       </div>
 
