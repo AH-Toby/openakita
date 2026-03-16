@@ -755,6 +755,7 @@ function AskQuestionItem({
   showOther,
   onToggleOther,
   letterOffset,
+  onSubmit,
 }: {
   question: ChatAskQuestion;
   selected: Set<string>;
@@ -764,6 +765,7 @@ function AskQuestionItem({
   showOther: boolean;
   onToggleOther: () => void;
   letterOffset?: number;
+  onSubmit?: () => void;
 }) {
   const { t } = useTranslation();
   const optionLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -838,16 +840,18 @@ function AskQuestionItem({
               onChange={(e) => onOtherText(e.target.value)}
               placeholder={t("chat.askPlaceholder")}
               style={{ fontSize: 13, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(124,58,237,0.25)", outline: "none" }}
-              onKeyDown={(e) => { if (e.key === "Escape") onToggleOther(); }}
+              onKeyDown={(e) => { if (e.key === "Escape") onToggleOther(); if (e.key === "Enter" && otherText.trim()) onSubmit?.(); }}
             />
           )}
         </div>
       ) : (
         <input
+          autoFocus
           value={otherText}
           onChange={(e) => onOtherText(e.target.value)}
           placeholder={t("chat.askPlaceholder")}
           style={{ width: "100%", fontSize: 13, padding: "7px 12px", borderRadius: 8, border: "1px solid rgba(124,58,237,0.25)", outline: "none", boxSizing: "border-box" }}
+          onKeyDown={(e) => { if (e.key === "Enter" && otherText.trim()) onSubmit?.(); }}
         />
       )}
     </div>
@@ -927,7 +931,6 @@ function AskUserBlock({ ask, onAnswer }: { ask: ChatAskUser; onAnswer: (answer: 
       }
       return;
     }
-    // 多问题：返回 JSON
     const result: Record<string, string | string[]> = {};
     normalizedQuestions.forEach((q) => {
       const sel = selections[q.id];
@@ -937,6 +940,7 @@ function AskUserBlock({ ask, onAnswer }: { ask: ChatAskUser; onAnswer: (answer: 
       if (arr.length === 0 && !other) return;
       result[q.id] = q.allow_multiple ? arr : (arr[0] || other || "");
     });
+    if (Object.keys(result).length === 0) return;
     onAnswer(JSON.stringify(result));
   }, [isSingle, normalizedQuestions, selections, otherTexts, onAnswer]);
 
@@ -976,11 +980,11 @@ function AskUserBlock({ ask, onAnswer }: { ask: ChatAskUser; onAnswer: (answer: 
             onOtherText={(v) => setOtherTexts((prev) => ({ ...prev, [q.id]: v }))}
             showOther={showOthers[q.id] || false}
             onToggleOther={() => setShowOthers((prev) => ({ ...prev, [q.id]: !prev[q.id] }))}
+            onSubmit={isSingle ? handleSubmit : undefined}
           />
         ))}
       </div>
-      {/* 多问题或多选时需要提交按钮 */}
-      {(!isSingle || normalizedQuestions.some((q) => q.allow_multiple)) && (
+      {(!isSingle || normalizedQuestions.some((q) => q.allow_multiple || !q.options?.length)) && (
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
           <button
             className="btnPrimary"
