@@ -90,6 +90,20 @@ class FeishuAdapter(ChannelAdapter):
 
     channel_name = "feishu"
 
+    capabilities = {
+        "streaming": True,
+        "send_image": True,
+        "send_file": True,
+        "send_voice": True,
+        "delete_message": False,
+        "edit_message": False,
+        "get_chat_info": True,
+        "get_user_info": True,
+        "get_chat_members": True,
+        "get_recent_messages": True,
+        "markdown": True,
+    }
+
     def __init__(
         self,
         app_id: str,
@@ -276,6 +290,12 @@ class FeishuAdapter(ChannelAdapter):
         except Exception as e:
             logger.warning(f"Feishu adapter: WebSocket startup failed: {e}")
             logger.warning("Feishu adapter: falling back to webhook-only mode")
+
+        if self._group_response_mode and self._group_response_mode != "mention_only":
+            logger.info(
+                f"Feishu[{self.channel_name}]: group_response_mode={self._group_response_mode}, "
+                f"请确保飞书后台已开启「接收群聊中所有消息」"
+            )
 
         # 探测可用权限/能力
         await self._probe_capabilities()
@@ -949,10 +969,17 @@ class FeishuAdapter(ChannelAdapter):
         }
 
     def get_auth_url(self, redirect_uri: str = "") -> str:
-        """Build Feishu OAuth2 user authorization URL."""
+        """Build Feishu OAuth2 user authorization URL.
+
+        When *redirect_uri* is empty the parameter is omitted so that the
+        Feishu platform automatically uses the redirect URI registered in the
+        developer console, avoiding error 20029 (redirect URL mismatch).
+        """
         base = "https://open.feishu.cn/open-apis/authen/v1/authorize"
-        redir = redirect_uri or "https://open.feishu.cn/open-apis/authen/v1/index"
-        return f"{base}?app_id={self.config.app_id}&redirect_uri={redir}&response_type=code"
+        url = f"{base}?app_id={self.config.app_id}&response_type=code"
+        if redirect_uri:
+            url += f"&redirect_uri={redirect_uri}"
+        return url
 
     _STALE_MESSAGE_THRESHOLD = 120  # 超过此秒数的重投递消息视为陈旧
 
@@ -1271,6 +1298,9 @@ class FeishuAdapter(ChannelAdapter):
         sender_id = sender.get("sender_id", {})
         user_id = sender_id.get("user_id") or sender_id.get("open_id", "")
 
+        metadata["is_group"] = chat_type == "group"
+        metadata["sender_name"] = ""
+
         return UnifiedMessage.create(
             channel=self.channel_name,
             channel_message_id=message.get("message_id", ""),
@@ -1395,36 +1425,67 @@ class FeishuAdapter(ChannelAdapter):
             self._streaming_buffers.pop(sk, None)
             self._streaming_last_patch.pop(sk, None)
             return card_id or sk
-        thinking_card_id = self._thinking_cards.pop(sk, None)
-        if thinking_card_id:
-            text = message.content.text or ""
-            if text and not message.content.has_media:
-                try:
-                    if await self._patch_card_content(thinking_card_id, text):
-                        return thinking_card_id
-                except Exception as e:
-                    logger.warning(f"Feishu: patch thinking card failed: {e}")
-            with contextlib.suppress(Exception):
-                await self._delete_feishu_message(thinking_card_id)
+        if sk not in self._streaming_buffers:
+            thinking_card_id = self._thinking_cards.pop(sk, None)
+            if thinking_card_id:
+                text = message.content.text or ""
+                if text and not message.content.has_media:
+                    try:
+                        if await self._patch_card_content(thinking_card_id, text):
+                            return thinking_card_id
+                    except Exception as e:
+                        logger.warning(f"Feishu: patch thinking card failed: {e}")
+                with contextlib.suppress(Exception):
+                    await self._delete_feishu_message(thinking_card_id)
 
         reply_target = message.reply_to or message.thread_id
 
-        # 语音/文件/视频：委托给专用方法，避免 fallthrough 到空文本
-        if message.content.voices and message.content.voices[0].local_path:
-            return await self.send_voice(
-                message.chat_id, message.content.voices[0].local_path,
-                message.content.text, reply_to=reply_target,
-            )
-        if message.content.files and message.content.files[0].local_path:
-            return await self.send_file(
-                message.chat_id, message.content.files[0].local_path,
-                message.content.text, reply_to=reply_target,
-            )
-        if message.content.videos and message.content.videos[0].local_path:
-            return await self.send_file(
-                message.chat_id, message.content.videos[0].local_path,
-                message.content.text, reply_to=reply_target,
-            )
+        # 语音/文件/视频：循环发送所有条目（首条带 caption 和 reply_to）
+        if message.content.voices:
+            first_msg_id = None
+            for i, voice in enumerate(message.content.voices):
+                if voice.local_path:
+                    try:
+                        mid = await self.send_voice(
+                            message.chat_id, voice.local_path,
+                            message.content.text if i == 0 else None,
+                            reply_to=reply_target if i == 0 else None,
+                        )
+                        if first_msg_id is None:
+                            first_msg_id = mid
+                    except Exception as e:
+                        logger.warning(f"Feishu: send voice [{i}] failed: {e}")
+            return first_msg_id or ""
+        if message.content.files:
+            first_msg_id = None
+            for i, file in enumerate(message.content.files):
+                if file.local_path:
+                    try:
+                        mid = await self.send_file(
+                            message.chat_id, file.local_path,
+                            message.content.text if i == 0 else None,
+                            reply_to=reply_target if i == 0 else None,
+                        )
+                        if first_msg_id is None:
+                            first_msg_id = mid
+                    except Exception as e:
+                        logger.warning(f"Feishu: send file [{i}] failed: {e}")
+            return first_msg_id or ""
+        if message.content.videos:
+            first_msg_id = None
+            for i, video in enumerate(message.content.videos):
+                if video.local_path:
+                    try:
+                        mid = await self.send_file(
+                            message.chat_id, video.local_path,
+                            message.content.text if i == 0 else None,
+                            reply_to=reply_target if i == 0 else None,
+                        )
+                        if first_msg_id is None:
+                            first_msg_id = mid
+                    except Exception as e:
+                        logger.warning(f"Feishu: send video [{i}] failed: {e}")
+            return first_msg_id or ""
 
         # 构建消息内容
         _pending_caption = None
@@ -1483,6 +1544,12 @@ class FeishuAdapter(ChannelAdapter):
                 raise RuntimeError(f"Failed to reply message: {response.msg}")
             if _pending_caption:
                 await self._send_text(message.chat_id, _pending_caption, reply_to=reply_target)
+            for extra_img in message.content.images[1:]:
+                if extra_img.local_path:
+                    try:
+                        await self.send_image(message.chat_id, extra_img.local_path, reply_to=reply_target)
+                    except Exception as e:
+                        logger.warning(f"Feishu: send extra image failed: {e}")
             return response.data.message_id
 
         # 普通发送（在线程池中执行同步调用）
@@ -1508,6 +1575,13 @@ class FeishuAdapter(ChannelAdapter):
 
         if _pending_caption:
             await self._send_text(message.chat_id, _pending_caption, reply_to=reply_target)
+
+        for extra_img in message.content.images[1:]:
+            if extra_img.local_path:
+                try:
+                    await self.send_image(message.chat_id, extra_img.local_path)
+                except Exception as e:
+                    logger.warning(f"Feishu: send extra image failed: {e}")
 
         return response.data.message_id
 
@@ -1726,6 +1800,9 @@ class FeishuAdapter(ChannelAdapter):
 
         if not response.success():
             raise RuntimeError(f"Failed to download media: {response.msg}")
+
+        if not getattr(response, "file", None):
+            raise RuntimeError(f"Download succeeded but response.file is empty for {media.file_id}")
 
         # 保存文件
         local_path = self.media_dir / media.filename

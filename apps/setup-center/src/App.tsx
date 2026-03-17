@@ -8415,19 +8415,19 @@ export function App() {
               )}
               {restartOverlay.phase === "done" && (
                 <>
-                  <div style={{ fontSize: 36, marginBottom: 8 }}><IconCheckCircle size={40} /></div>
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><IconCheckCircle size={40} /></div>
                   <div style={{ fontSize: 16, fontWeight: 600, color: "#059669" }}>{t("config.restartSuccess")}</div>
                 </>
               )}
               {restartOverlay.phase === "fail" && (
                 <>
-                  <div style={{ fontSize: 36, marginBottom: 8 }}><IconXCircle size={40} /></div>
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><IconXCircle size={40} /></div>
                   <div style={{ fontSize: 16, fontWeight: 600, color: "#dc2626" }}>{t("config.restartFail")}</div>
                 </>
               )}
               {restartOverlay.phase === "notRunning" && (
                 <>
-                  <div style={{ fontSize: 36, marginBottom: 8 }}><IconInfo size={40} /></div>
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}><IconInfo size={40} /></div>
                   <div style={{ fontSize: 14, fontWeight: 500, color: "#64748b" }}>{t("config.restartNotRunning")}</div>
                 </>
               )}

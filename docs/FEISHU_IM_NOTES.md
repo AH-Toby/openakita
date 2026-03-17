@@ -164,6 +164,11 @@
 | 38 | 流式输出后续消息复用旧卡片 | `finalize_stream` 成功后不清理 `_thinking_cards[sk]`（设计由 `send_message` 清理），但 `streamed_ok=True` 时 `send_message` 被跳过，导致下一轮 `send_typing` 跳过创卡、`stream_token` PATCH 旧卡 | `finalize_stream` 成功后 pop `_thinking_cards[sk]`；`send_typing` 入口清理残留 `_streaming_finalized` | feishu.py |
 | 39 | 流式卡片不显示思考过程 | `_call_agent_streaming` 忽略 `thinking_delta`/`thinking_end` 事件，思维链只通过非流式 `progress_callback` 推送独立消息 | 新增 `stream_thinking()` 方法及 `_streaming_thinking` buffer；`_compose_thinking_display()` 组合思考 + 回复内容；Gateway 检查 `chain_push` 后 pipe thinking 事件到 adapter | feishu.py, gateway.py |
 | 40 | 流式路径不推送 chain_text 进度到会话后台 | `_call_agent_streaming` 未处理 `chain_text` 事件（工具调用描述、结果摘要等），也未在 `thinking_end` 时调用 `emit_progress_event`，导致会话后台/IM 消息历史完全看不到思维过程 | 新增 `chain_text` 事件处理 → `emit_progress_event`；`thinking_end` 时发送 💭 思考预览进度；finalize 前调用 `flush_progress` 确保进度消息先于回答到达 | gateway.py |
+| 41 | `run_skill_script` 找不到技能 | `run_script()` 用 `_loaded_skills.get(name)` 做严格 skill_id 匹配，Agent 传入的 `name` 字段（如 `openakita/skills@datetime-tool`）匹配失败 | 改用 `_resolve_skill(name)`，支持 skill_id 和 name 回退查找，与 `get_skill()` 一致 | loader.py |
+| 42 | 流式中间进度消息过早消费 thinking card | `emit_progress_event` → `send_text` → `send_message` 无条件 pop `_thinking_cards[sk]`，导致 `finalize_stream` 找不到卡片、返回 False，"思考中..."卡片残留 | Gateway `_call_agent_streaming` 开头初始化 `_streaming_buffers[sk]`；`send_message` 检测 `sk in _streaming_buffers` 时跳过 thinking card 消费 | gateway.py, feishu.py |
+| 43 | ForceToolCall 对 REPLY 意图冲突重试 | `[REPLY]` intent + tool_calls=0 仍保留 1 次重试，闲聊场景模型被强制再问"是否该调工具"，产生矛盾提示和额外 token 消耗 | `intent == "REPLY"` 时直接 `return clean_llm_response()`，不重试；`[ACTION]` 和无标记保留完整重试 | reasoning_engine.py |
+| 44 | 群聊"智能判断"/"所有消息"模式无效果 | OpenAkita `group_response_mode` 只控制 gateway 过滤，飞书平台默认只投递 @提及消息 | UI 选择非"仅@时回复"时显示提示："需在飞书后台开启「接收群聊中所有消息」"；适配器启动时输出提醒日志 | IMView.tsx, feishu.py, zh.json, en.json |
+| 45 | `/feishu auth` 生成的 OAuth URL 报错 20029 | `get_auth_url()` 硬编码 `redirect_uri` 为占位值，未在飞书后台注册 | 默认不传 `redirect_uri`，让飞书平台自动使用已注册的回调地址 | feishu.py |
 
 ---
 

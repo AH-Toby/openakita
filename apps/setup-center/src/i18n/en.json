@@ -1464,6 +1464,7 @@
     "groupMode_always": "Always reply",
     "groupModeHint_mention_only": "Only reply when @mentioned, safest option",
     "groupModeHint_smart": "AI decides whether to reply",
-    "groupModeHint_always": "Reply to all messages in group (use with caution)"
+    "groupModeHint_always": "Reply to all messages in group (use with caution)",
+    "groupModeHint": "Requires enabling \"Receive all group messages\" in Feishu Developer Console → App → Bot → Message receiving mode, otherwise the bot only receives @mentions"
   }
 }

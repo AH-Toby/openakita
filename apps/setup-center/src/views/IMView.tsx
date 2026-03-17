@@ -262,24 +262,36 @@ export function IMView({
       {/* Tabs */}
       {multiAgentEnabled && (
         <div style={{
-          display: "flex", gap: 0, borderBottom: "1px solid var(--line)",
-          padding: "0 16px", background: "var(--panel)", flexShrink: 0,
+          display: "flex", alignItems: "center", gap: 4,
+          padding: "10px 16px", background: "var(--panel)", flexShrink: 0,
+          borderBottom: "1px solid var(--line)",
         }}>
-          {(["messages", "bots"] as const).map((key) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              style={{
-                padding: "10px 20px", border: "none", cursor: "pointer",
-                background: "transparent", fontSize: 13, fontWeight: tab === key ? 600 : 400,
-                color: tab === key ? "var(--primary, #3b82f6)" : "inherit",
-                borderBottom: tab === key ? "2px solid var(--primary, #3b82f6)" : "2px solid transparent",
-                transition: "all 0.15s",
-              }}
-            >
-              {key === "messages" ? t("im.tabMessages") : t("im.tabBots")}
-            </button>
-          ))}
+          <div style={{
+            display: "inline-flex", gap: 2, padding: 3,
+            borderRadius: 10, background: "rgba(37,99,235,0.08)",
+          }}>
+            {(["messages", "bots"] as const).map((key) => {
+              const active = tab === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setTab(key)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    padding: "6px 14px", border: "none", cursor: "pointer",
+                    borderRadius: 8, fontSize: 13, fontWeight: 500,
+                    background: active ? "var(--primary, #2563eb)" : "transparent",
+                    color: active ? "#fff" : "var(--primary, #2563eb)",
+                    boxShadow: active ? "0 1px 4px rgba(37,99,235,0.3)" : "none",
+                    transition: "all 0.2s",
+                  }}
+                >
+                  {key === "messages" ? <IconMessageCircle size={14} /> : <IconBot size={14} />}
+                  {key === "messages" ? t("im.tabMessages") : t("im.tabBots")}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -1203,6 +1215,11 @@ function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, venvDir, a
                       </button>
                     ))}
                   </div>
+                  {(editingBot.credentials.group_response_mode === "smart" || editingBot.credentials.group_response_mode === "always") && (
+                    <div style={{ fontSize: 11, color: "#e67700", marginTop: 6, lineHeight: 1.5 }}>
+                      {t("feishu.groupModeHint")}
+                    </div>
+                  )}
                 </div>
               </>
             )}

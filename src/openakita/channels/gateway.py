@@ -2862,6 +2862,7 @@ class MessageGateway:
             use_streaming = (
                 allow_streaming
                 and adapter is not None
+                and adapter.has_capability("streaming")
                 and hasattr(adapter, "is_streaming_enabled")
                 and adapter.is_streaming_enabled(is_group)
                 and self.agent_handler_stream is not None
@@ -2911,6 +2912,10 @@ class MessageGateway:
         )
 
         _thinking_buf = ""
+
+        if hasattr(adapter, "_streaming_buffers") and hasattr(adapter, "_make_session_key"):
+            _sk = adapter._make_session_key(message.chat_id, message.thread_id)
+            adapter._streaming_buffers.setdefault(_sk, "")
 
         try:
             async for event in self.agent_handler_stream(session, input_text):
@@ -3037,13 +3042,22 @@ class MessageGateway:
         - 首次以 Markdown 分片发送
         - 任一分片 3 次重试仍失败 → 中止剩余分片，改用纯文本整体重发
         - 纯文本重发也失败 → 发送失败通知
+
+        媒体补发：
+        - 在发送文本前解析回复中的 ![](path)、MEDIA: 行、裸路径
+        - 先发清理后的文本，再逐个补发图片/文件
         """
         import asyncio
+        from .media_parser import parse_media_from_text
 
         adapter = self._adapters.get(original.channel)
         if not adapter:
             logger.error(f"No adapter for channel: {original.channel}")
             return
+
+        # 解析文本中的媒体引用
+        media_result = parse_media_from_text(response)
+        text_to_send = media_result.cleaned_text
 
         channel = original.channel
         base_channel = channel.split(":")[0].split("_")[0]
@@ -3051,7 +3065,8 @@ class MessageGateway:
         max_length = self._CHANNEL_MAX_LENGTH.get(
             base_channel, self._DEFAULT_MAX_LENGTH
         )
-        messages = self._split_text(response, max_length)
+        from .text_splitter import chunk_markdown_text
+        messages = chunk_markdown_text(text_to_send, max_length) if text_to_send else []
 
         interval = self._SPLIT_SEND_INTERVAL.get(
             base_channel, self._DEFAULT_SPLIT_INTERVAL
@@ -3076,29 +3091,24 @@ class MessageGateway:
                 metadata=outgoing_meta,
             )
 
-            sent = False
-            for attempt in range(3):
-                try:
-                    await adapter.send_message(outgoing)
-                    sent = True
-                    break
-                except Exception as e:
-                    if attempt < 2:
-                        logger.warning(
-                            f"Send failed (attempt {attempt + 1}), "
-                            f"retrying in 1s: {e}"
-                        )
-                        await asyncio.sleep(1)
-                    else:
-                        logger.error(
-                            f"Failed to send response part {i + 1}/{len(messages)} "
-                            f"after 3 attempts: {e}"
-                        )
-            if not sent:
+            from .retry import async_with_retry
+            try:
+                await async_with_retry(
+                    adapter.send_message, outgoing,
+                    max_retries=2,
+                    base_delay=1.0,
+                    operation_name=f"send_response[{i + 1}/{len(messages)}]",
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to send response part {i + 1}/{len(messages)} "
+                    f"after retries: {e}"
+                )
                 failed_at = i
                 break
 
         if failed_at < 0:
+            await self._send_extracted_media(adapter, original, media_result, outgoing_meta)
             return
 
         # 分片发送失败 → 仅将失败及后续分片以纯文本重发，避免已送达的部分重复
@@ -3132,6 +3142,40 @@ class MessageGateway:
                         metadata=outgoing_meta,
                     )
                 return
+
+        await self._send_extracted_media(adapter, original, media_result, outgoing_meta)
+
+    async def _send_extracted_media(
+        self,
+        adapter: "ChannelAdapter",
+        original: UnifiedMessage,
+        media_result: "MediaParseResult",
+        outgoing_meta: dict,
+    ) -> None:
+        """补发从回复文本中解析出的图片/文件"""
+        reply_to = original.thread_id or original.channel_message_id
+
+        if adapter.has_capability("send_image"):
+            for img in media_result.images:
+                if img.is_url:
+                    continue
+                try:
+                    await adapter.send_image(
+                        original.chat_id, img.path, reply_to=reply_to,
+                    )
+                except Exception as e:
+                    logger.warning(f"[SendResponse] send extracted image failed: {e}")
+
+        if adapter.has_capability("send_file"):
+            for file in media_result.files:
+                if file.is_url:
+                    continue
+                try:
+                    await adapter.send_file(
+                        original.chat_id, file.path, reply_to=reply_to,
+                    )
+                except Exception as e:
+                    logger.warning(f"[SendResponse] send extracted file failed: {e}")
 
     async def _send_error(self, original: UnifiedMessage, error: str) -> None:
         """

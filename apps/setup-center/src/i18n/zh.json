@@ -1464,6 +1464,7 @@
     "groupMode_always": "所有消息",
     "groupModeHint_mention_only": "仅在被 @提及 时回复，最安全",
     "groupModeHint_smart": "AI 判断消息是否需要回复",
-    "groupModeHint_always": "回复群内所有消息（慎用）"
+    "groupModeHint_always": "回复群内所有消息（慎用）",
+    "groupModeHint": "⚠ 需要在飞书开放平台 → 应用 → 机器人 → 消息接收模式 中开启「接收群聊中所有消息」，否则机器人只能收到 @消息"
   }
 }
