@@ -578,6 +578,27 @@ try:
 except ImportError:
     print("[spec] WARNING: requests_toolbelt not installed")
 
+# httpx 及其传递依赖: bridge.py 子进程通过独立 python.exe 运行（非冻结可执行文件），
+# 只能从 sys.path 上的 loose 文件导入，无法读取 PYZ 归档。
+# 飞书/企微/QQ 扫码 onboard 以及 list-models、health-check 等命令均依赖 httpx。
+_bridge_subprocess_pkgs = [
+    ("httpx", "httpx"),           # HTTP 客户端
+    ("httpcore", "httpcore"),     # httpx 核心传输层
+    ("h11", "h11"),              # HTTP/1.1 协议解析 (httpcore 依赖)
+    ("anyio", "anyio"),          # 异步 I/O (httpx AsyncClient 依赖)
+    ("sniffio", "sniffio"),      # 异步库检测 (anyio 依赖)
+    ("idna", "idna"),            # 国际域名处理 (httpx URL 解析依赖)
+    ("socksio", "socksio"),      # SOCKS 代理支持 (httpx[socks])
+]
+for _imp_name, _pkg_name in _bridge_subprocess_pkgs:
+    try:
+        _mod = __import__(_imp_name)
+        _mod_dir = str(Path(_mod.__file__).parent)
+        datas.append((_mod_dir, _pkg_name))
+        print(f"[spec] Bundling {_pkg_name}: {_mod_dir}")
+    except ImportError:
+        print(f"[spec] WARNING: {_imp_name} not installed, bridge subprocess may fail")
+
 # Built-in Python interpreter + pip (bundled mode can install optional modules without host Python)
 # IMPORTANT: do NOT bundle a venv launcher (it may require pyvenv.cfg at runtime).
 # Prefer base interpreter from sys.base_prefix, fallback to sys.executable.

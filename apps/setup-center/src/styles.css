@@ -1462,6 +1462,7 @@ button.btnApplyRestart:hover {
   align-items: center;
   justify-content: center;
   padding: 24px;
+  pointer-events: auto;
   animation: fadeIn 0.15s ease-out;
 }
 @keyframes fadeIn {

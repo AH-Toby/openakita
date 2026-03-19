@@ -1420,7 +1420,10 @@ export function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, ven
 
       {/* Editor Sheet */}
       <Sheet open={editorOpen} onOpenChange={(open) => { if (!open) closeEditor(); }}>
-        <SheetContent side="right" className="sm:max-w-md flex flex-col">
+        <SheetContent side="right" className="sm:max-w-md flex flex-col"
+          onPointerDownOutside={(e) => { if (showFeishuQR || showQQBotQR || showWecomQR) e.preventDefault(); }}
+          onInteractOutside={(e) => { if (showFeishuQR || showQQBotQR || showWecomQR) e.preventDefault(); }}
+        >
           <SheetHeader>
             <SheetTitle>{isCreating ? t("im.createBot") : t("im.editBot")}</SheetTitle>
           </SheetHeader>
