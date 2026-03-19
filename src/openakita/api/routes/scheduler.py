@@ -368,6 +368,16 @@ async def list_channels(request: Request):
                     "display_name": "",
                 })
 
+    alias_store = getattr(gateway, "chat_aliases", None)
+    if alias_store:
+        for entry in results:
+            ch = entry.get("channel_id", "")
+            cid = entry.get("chat_id", "")
+            if ch and cid:
+                a = alias_store.get_alias(ch, cid)
+                if a:
+                    entry["alias"] = a
+
     return {"channels": results}
 
 

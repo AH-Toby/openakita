@@ -30,6 +30,11 @@ def _get_bot_config(request: Request):
     return getattr(gateway, "bot_config", None) if gateway else None
 
 
+def _get_chat_aliases(request: Request):
+    gateway = _get_gateway(request)
+    return getattr(gateway, "chat_aliases", None) if gateway else None
+
+
 def _notify_im_event(event: str, data: dict | None = None) -> None:
     try:
         from openakita.api.routes.websocket import broadcast_event
@@ -125,6 +130,10 @@ async def list_sessions(request: Request, channel: str = Query("")):
 
         bot_config = _get_bot_config(request)
         _bot_enabled = bot_config.is_enabled(sess_channel, _chat_id or "", _user_id or "") if bot_config else True
+        _response_mode = bot_config.get_response_mode(sess_channel, _chat_id or "", "*") if bot_config else None
+
+        alias_store = _get_chat_aliases(request)
+        _alias = alias_store.get_alias(sess_channel, _chat_id) if alias_store and sess_channel and _chat_id else None
 
         result.append({
             "sessionId": _sess_id,
@@ -134,11 +143,13 @@ async def list_sessions(request: Request, channel: str = Query("")):
             "chatType": _chat_type,
             "chatName": _chat_name,
             "displayName": _display_name or _user_id or _chat_id or _sess_id[:12],
+            "alias": _alias,
             "state": state_str,
             "lastActive": str(getattr(sess, "last_active", None) or getattr(sess, "updated_at", "")),
             "messageCount": msg_count,
             "lastMessage": last_msg,
             "botEnabled": _bot_enabled,
+            "responseMode": _response_mode,
         })
 
     return JSONResponse(content={"sessions": result})
@@ -160,13 +171,22 @@ async def get_session_messages(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     source: str = Query("memory"),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
 ):
-    """Return messages for a specific session. source=memory (default) or sqlite."""
+    """Return messages for a specific session.
+
+    source=memory (default) or sqlite.
+    date_from / date_to: optional ISO date strings (e.g. '2026-03-19') to filter.
+    """
 
     if source == "sqlite":
         storage = _get_storage()
         if storage:
-            rows, total = storage.list_turns(session_id, limit, offset)
+            rows, total = storage.list_turns(
+                session_id, limit, offset,
+                date_from=date_from, date_to=date_to,
+            )
             messages = [
                 {
                     "id": r.get("id"),
@@ -196,6 +216,19 @@ async def get_session_messages(
 
     ctx = getattr(sess, "context", None)
     history = getattr(ctx, "messages", []) if ctx else []
+
+    if date_from or date_to:
+        def _in_range(item: Any) -> bool:
+            ts = item.get("timestamp", "") if isinstance(item, dict) else str(getattr(item, "timestamp", ""))
+            if not ts:
+                return True
+            if date_from and ts < date_from:
+                return False
+            if date_to and ts > date_to + "T23:59:59.999999":
+                return False
+            return True
+        history = [m for m in history if _in_range(m)]
+
     total = len(history)
     page = history[offset: offset + limit]
 
@@ -217,6 +250,21 @@ async def get_session_messages(
                 "metadata": getattr(item, "metadata", None),
                 "chain_summary": getattr(item, "chain_summary", None),
             })
+
+    storage = _get_storage()
+    if storage and messages:
+        try:
+            turns, _ = storage.list_turns(session_id, limit=limit, offset=offset,
+                                          date_from=date_from, date_to=date_to)
+            id_map: dict[int, int] = {}
+            for t in turns:
+                ti = t.get("turn_index")
+                if ti is not None and t.get("id") is not None:
+                    id_map[ti] = t["id"]
+            for i, msg in enumerate(messages):
+                msg["id"] = id_map.get(offset + i)
+        except Exception:
+            pass
 
     return JSONResponse(content={
         "messages": messages,
@@ -293,6 +341,7 @@ class BotConfigRequest(BaseModel):
     chat_id: str
     user_id: str = "*"
     enabled: bool
+    response_mode: str | None = None
 
 
 @router.get("/api/im/bot-config")
@@ -312,9 +361,11 @@ async def set_bot_config(request: Request, body: BotConfigRequest):
     bot_config.set_rule(BotConfigRule(
         channel=body.channel, chat_id=body.chat_id,
         user_id=body.user_id, enabled=body.enabled,
+        response_mode=body.response_mode,
     ))
     _notify_im_event("im:bot_config_changed", {
-        "channel": body.channel, "chat_id": body.chat_id, "enabled": body.enabled,
+        "channel": body.channel, "chat_id": body.chat_id,
+        "enabled": body.enabled, "response_mode": body.response_mode,
     })
     return JSONResponse(content={"ok": True})
 
@@ -332,6 +383,50 @@ async def delete_bot_config(
     removed = bot_config.delete_rule(channel, chat_id, user_id)
     if removed:
         _notify_im_event("im:bot_config_changed", {"channel": channel, "chat_id": chat_id})
+    return JSONResponse(content={"ok": True, "removed": removed})
+
+
+# ─── Chat Aliases (per-chat custom display names) ────────────────────────
+
+
+class ChatAliasRequest(BaseModel):
+    channel: str
+    chat_id: str
+    alias: str
+
+
+@router.get("/api/im/chat-aliases")
+async def list_chat_aliases(request: Request, channel: str = Query("")):
+    store = _get_chat_aliases(request)
+    if store is None:
+        return JSONResponse(content={"aliases": {}})
+    return JSONResponse(content={"aliases": store.list_aliases(channel or None)})
+
+
+@router.post("/api/im/chat-aliases")
+async def set_chat_alias(request: Request, body: ChatAliasRequest):
+    store = _get_chat_aliases(request)
+    if store is None:
+        return JSONResponse(status_code=500, content={"error": "chat_aliases not available"})
+    store.set_alias(body.channel, body.chat_id, body.alias)
+    _notify_im_event("im:chat_alias_changed", {
+        "channel": body.channel, "chat_id": body.chat_id, "alias": body.alias,
+    })
+    return JSONResponse(content={"ok": True})
+
+
+@router.delete("/api/im/chat-aliases")
+async def delete_chat_alias(
+    request: Request,
+    channel: str = Query(...),
+    chat_id: str = Query(...),
+):
+    store = _get_chat_aliases(request)
+    if store is None:
+        return JSONResponse(status_code=500, content={"error": "chat_aliases not available"})
+    removed = store.delete_alias(channel, chat_id)
+    if removed:
+        _notify_im_event("im:chat_alias_changed", {"channel": channel, "chat_id": chat_id, "alias": None})
     return JSONResponse(content={"ok": True, "removed": removed})
 
 
@@ -363,7 +458,7 @@ async def get_group_policy(request: Request, channel: str = Query("")):
     if gateway is None:
         return JSONResponse(content={"mode": "mention_only", "allowlist": [], "groups": []})
 
-    mode = gateway._get_group_response_mode(channel).value if channel else "mention_only"
+    mode = gateway._get_group_response_mode(channel, "", "*").value if channel else "mention_only"
     allowlist = list(gateway._get_group_allowlist(channel)) if channel else []
 
     groups: list[dict[str, Any]] = []

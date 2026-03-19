@@ -21,6 +21,7 @@ class BotConfigRule:
     chat_id: str
     user_id: str
     enabled: bool
+    response_mode: str | None = None
 
 
 class BotConfigStore:
@@ -45,6 +46,16 @@ class BotConfigStore:
             if r.channel == channel and r.chat_id == chat_id and r.user_id == "*":
                 return r.enabled
         return True
+
+    def get_response_mode(self, channel: str, chat_id: str, user_id: str) -> str | None:
+        """Return the per-chat response_mode override, or None if not set."""
+        for r in self._rules:
+            if r.channel == channel and r.chat_id == chat_id and r.user_id == user_id:
+                return r.response_mode
+        for r in self._rules:
+            if r.channel == channel and r.chat_id == chat_id and r.user_id == "*":
+                return r.response_mode
+        return None
 
     def set_rule(self, rule: BotConfigRule) -> None:
         for i, r in enumerate(self._rules):
@@ -77,7 +88,13 @@ class BotConfigStore:
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
             self._rules = [
-                BotConfigRule(**item)
+                BotConfigRule(
+                    channel=item["channel"],
+                    chat_id=item["chat_id"],
+                    user_id=item.get("user_id", "*"),
+                    enabled=item.get("enabled", True),
+                    response_mode=item.get("response_mode"),
+                )
                 for item in data.get("rules", [])
                 if isinstance(item, dict) and "channel" in item and "chat_id" in item
             ]

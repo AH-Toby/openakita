@@ -1,6 +1,6 @@
 // ─── IMView: IM Channel Viewer + Bot Configuration ───
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -29,7 +29,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter } from "@/com
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Bot, BotOff, Loader2, RefreshCw, X } from "lucide-react";
+import { Bot, BotOff, Loader2, Pencil, RefreshCw, X } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -55,6 +55,8 @@ type IMSession = {
   messageCount: number;
   lastMessage: string | null;
   botEnabled?: boolean;
+  responseMode?: string | null;
+  alias?: string | null;
 };
 
 type ChainSummaryItem = {
@@ -227,6 +229,16 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
   const [selectMode, setSelectMode] = useState(false);
   const [selectedMsgIds, setSelectedMsgIds] = useState<Set<number>>(new Set());
   const [loadingMore, setLoadingMore] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+  const isFirstLoad = useRef(true);
+
+  const [inlineEditSessionId, setInlineEditSessionId] = useState<string | null>(null);
+  const [inlineEditValue, setInlineEditValue] = useState("");
+  const [aliasDialogSession, setAliasDialogSession] = useState<IMSession | null>(null);
+  const [aliasDialogValue, setAliasDialogValue] = useState("");
 
   const getChannelDisplayName = useCallback((ch: IMChannel): string => {
     const key = `status.${(ch.channel || "").toLowerCase()}`;
@@ -255,13 +267,17 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
     return [];
   }, [serviceRunning, apiBase]);
 
-  const fetchMessages = useCallback(async (sessionId: string, limit = 50, offset = 0) => {
+  const fetchMessages = useCallback(async (sessionId: string, limit = 50, offset = 0, df?: string, dt?: string) => {
     if (!serviceRunning) return;
     try {
-      const res = await safeFetch(`${apiBase}/api/im/sessions/${encodeURIComponent(sessionId)}/messages?limit=${limit}&offset=${offset}`);
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      if (df) params.set("date_from", df);
+      if (dt) params.set("date_to", dt);
+      const res = await safeFetch(`${apiBase}/api/im/sessions/${encodeURIComponent(sessionId)}/messages?${params}`);
       const data = await res.json();
       setMessages(data.messages || []);
       setTotalMessages(data.total || 0);
+      isFirstLoad.current = true;
     } catch { /* ignore */ }
   }, [serviceRunning, apiBase]);
 
@@ -300,10 +316,12 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
 
   useEffect(() => {
     if (!serviceRunning || !selectedSessionId) return;
-    fetchMessages(selectedSessionId);
-    const msgTimer = setInterval(() => { fetchMessages(selectedSessionId); }, IS_WEB ? 30_000 : 8000);
+    fetchMessages(selectedSessionId, 50, 0, dateFrom || undefined, dateTo || undefined);
+    const msgTimer = setInterval(() => {
+      fetchMessages(selectedSessionId, 50, 0, dateFrom || undefined, dateTo || undefined);
+    }, IS_WEB ? 30_000 : 8000);
     return () => clearInterval(msgTimer);
-  }, [serviceRunning, selectedSessionId, fetchMessages]);
+  }, [serviceRunning, selectedSessionId, fetchMessages, dateFrom, dateTo]);
 
   useEffect(() => {
     if (!IS_WEB) return;
@@ -344,19 +362,31 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
 
   const handleLoadMore = useCallback(async () => {
     if (!selectedSessionId || loadingMore) return;
+    const container = scrollContainerRef.current;
+    const prevScrollHeight = container?.scrollHeight ?? 0;
     setLoadingMore(true);
     try {
       const nextOffset = messages.length;
+      const params = new URLSearchParams({ limit: "50", offset: String(nextOffset) });
+      if (dateFrom) params.set("date_from", dateFrom);
+      if (dateTo) params.set("date_to", dateTo);
       const res = await safeFetch(
-        `${apiBase}/api/im/sessions/${encodeURIComponent(selectedSessionId)}/messages?limit=50&offset=${nextOffset}`,
+        `${apiBase}/api/im/sessions/${encodeURIComponent(selectedSessionId)}/messages?${params}`,
       );
       const data = await res.json();
       const more: IMMessage[] = data.messages || [];
-      if (more.length) setMessages((prev) => [...prev, ...more]);
+      if (more.length) {
+        setMessages((prev) => [...prev, ...more]);
+        requestAnimationFrame(() => {
+          if (container) {
+            container.scrollTop += container.scrollHeight - prevScrollHeight;
+          }
+        });
+      }
       setTotalMessages(data.total || totalMessages);
     } catch { /* ignore */ }
     setLoadingMore(false);
-  }, [apiBase, selectedSessionId, messages.length, totalMessages, loadingMore]);
+  }, [apiBase, selectedSessionId, messages.length, totalMessages, loadingMore, dateFrom, dateTo]);
 
   const handleDeleteMessages = useCallback(async () => {
     if (!selectedSessionId || selectedMsgIds.size === 0) return;
@@ -381,6 +411,32 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
     });
   }, []);
 
+  useEffect(() => {
+    if (isFirstLoad.current && messages.length > 0 && scrollContainerRef.current) {
+      isFirstLoad.current = false;
+      requestAnimationFrame(() => {
+        const el = scrollContainerRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
+  }, [messages]);
+
+  useEffect(() => {
+    const sentinel = topSentinelRef.current;
+    const container = scrollContainerRef.current;
+    if (!sentinel || !container) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && messages.length < totalMessages && !loadingMore) {
+          handleLoadMore();
+        }
+      },
+      { root: container, threshold: 0.1 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [messages.length, totalMessages, loadingMore, handleLoadMore]);
+
   const handleDeleteSession = useCallback((s: IMSession, e: React.MouseEvent) => {
     e.stopPropagation();
     const name = s.chatType === "group"
@@ -394,8 +450,14 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
 
   const handleToggleBot = useCallback(async (s: IMSession, e: React.MouseEvent) => {
     e.stopPropagation();
-    const newEnabled = s.botEnabled === false;
-    setSessions((prev) => prev.map((x) => x.sessionId === s.sessionId ? { ...x, botEnabled: newEnabled } : x));
+    const isCurrentlyDisabled = s.botEnabled === false || s.responseMode === "disabled";
+    const newEnabled = isCurrentlyDisabled;
+    const newMode = isCurrentlyDisabled ? null : "disabled";
+    setSessions((prev) => prev.map((x) =>
+      x.sessionId === s.sessionId
+        ? { ...x, botEnabled: newEnabled, responseMode: newMode }
+        : (s.chatId && x.chatId === s.chatId ? { ...x, botEnabled: newEnabled, responseMode: newMode } : x),
+    ));
     try {
       await safeFetch(`${apiBase}/api/im/bot-config`, {
         method: "POST",
@@ -405,13 +467,73 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
           chat_id: s.chatId || "",
           user_id: "*",
           enabled: newEnabled,
+          response_mode: newMode,
         }),
       });
       if (selectedChannel) fetchSessions(selectedChannel);
     } catch {
-      setSessions((prev) => prev.map((x) => x.sessionId === s.sessionId ? { ...x, botEnabled: s.botEnabled } : x));
+      setSessions((prev) => prev.map((x) => x.sessionId === s.sessionId ? { ...x, botEnabled: s.botEnabled, responseMode: s.responseMode } : x));
     }
   }, [apiBase, selectedChannel, fetchSessions]);
+
+  const saveAlias = useCallback(async (s: IMSession, alias: string) => {
+    const trimmed = alias.trim();
+    if (!s.channel || !s.chatId) return;
+    try {
+      if (trimmed) {
+        await safeFetch(`${apiBase}/api/im/chat-aliases`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channel: s.channel, chat_id: s.chatId, alias: trimmed }),
+        });
+        setSessions((prev) =>
+          prev.map((x) => x.chatId === s.chatId && x.channel === s.channel ? { ...x, alias: trimmed } : x),
+        );
+      } else {
+        await safeFetch(
+          `${apiBase}/api/im/chat-aliases?channel=${encodeURIComponent(s.channel)}&chat_id=${encodeURIComponent(s.chatId)}`,
+          { method: "DELETE" },
+        );
+        setSessions((prev) =>
+          prev.map((x) => x.chatId === s.chatId && x.channel === s.channel ? { ...x, alias: null } : x),
+        );
+      }
+    } catch { /* ignore */ }
+  }, [apiBase]);
+
+  const handleInlineEditStart = useCallback((s: IMSession) => {
+    setInlineEditSessionId(s.sessionId);
+    setInlineEditValue(s.alias || "");
+  }, []);
+
+  const handleInlineEditSave = useCallback((s: IMSession) => {
+    setInlineEditSessionId(null);
+    saveAlias(s, inlineEditValue);
+  }, [inlineEditValue, saveAlias]);
+
+  const handleAliasDialogOpen = useCallback((s: IMSession, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setAliasDialogSession(s);
+    setAliasDialogValue(s.alias || "");
+  }, []);
+
+  const handleAliasDialogSave = useCallback(() => {
+    if (!aliasDialogSession) return;
+    saveAlias(aliasDialogSession, aliasDialogValue);
+    setAliasDialogSession(null);
+  }, [aliasDialogSession, aliasDialogValue, saveAlias]);
+
+  const handleAliasDialogClear = useCallback(() => {
+    if (!aliasDialogSession) return;
+    saveAlias(aliasDialogSession, "");
+    setAliasDialogSession(null);
+  }, [aliasDialogSession, saveAlias]);
+
+  const getSessionDisplayName = useCallback((s: IMSession): string => {
+    if (s.alias) return s.alias;
+    if (s.chatType === "group") return s.chatName || s.chatId || s.sessionId.slice(0, 12);
+    return s.displayName || s.userId || s.chatId || s.sessionId.slice(0, 12);
+  }, []);
 
   return (
     <>
@@ -474,21 +596,52 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
                         selectedSessionId === s.sessionId
                           ? "bg-accent text-accent-foreground"
                           : "hover:bg-accent/50",
-                        s.botEnabled === false && "opacity-50",
+                        (s.botEnabled === false || s.responseMode === "disabled") && "opacity-50",
                       )}
                       onClick={() => handleSelectSession(s.sessionId)}
                       role="button"
                       tabIndex={0}
                     >
-                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      <div
+                        className="flex items-center gap-1.5 min-w-0 flex-1"
+                        title={[
+                          s.alias ? `✏ ${s.alias}` : null,
+                          s.chatType === "group"
+                            ? (s.chatName || s.chatId || s.sessionId)
+                            : (s.displayName || s.userId || s.chatId || s.sessionId),
+                          s.chatType === "group" && s.displayName ? `(${s.displayName})` : "",
+                          s.chatId ? `chat: ${s.chatId}` : "",
+                          s.userId ? `user: ${s.userId}` : "",
+                        ].filter(Boolean).join("\n")}
+                        onDoubleClick={(e) => { e.stopPropagation(); handleInlineEditStart(s); }}
+                      >
                         {s.chatType === "group" ? <IconUsers size={13} className="shrink-0" /> : <IconUser size={13} className="shrink-0" />}
-                        <span className="font-semibold truncate text-[13px]">
-                          {s.chatType === "group"
-                            ? (s.chatName || s.chatId || s.sessionId.slice(0, 12))
-                            : (s.displayName || s.userId || s.chatId || s.sessionId.slice(0, 12))}
-                        </span>
-                        {s.chatType === "group" && s.chatName && s.displayName && (
-                          <span className="text-[11px] text-muted-foreground truncate">({s.displayName})</span>
+                        {inlineEditSessionId === s.sessionId ? (
+                          <Input
+                            autoFocus
+                            value={inlineEditValue}
+                            onChange={(e) => setInlineEditValue(e.target.value)}
+                            onBlur={() => handleInlineEditSave(s)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") handleInlineEditSave(s);
+                              if (e.key === "Escape") setInlineEditSessionId(null);
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="h-5 text-[13px] px-1 py-0 min-w-0 flex-1"
+                            placeholder={t("im.aliasPlaceholder")}
+                          />
+                        ) : (
+                          <>
+                            <span className={cn("font-semibold truncate text-[13px]", s.alias && "text-primary")}>
+                              {getSessionDisplayName(s)}
+                            </span>
+                            {s.alias && (
+                              <Badge variant="outline" className="h-4 text-[9px] px-1 py-0 shrink-0">{t("im.aliasSet")}</Badge>
+                            )}
+                            {!s.alias && s.chatType === "group" && s.chatName && s.displayName && (
+                              <span className="text-[11px] text-muted-foreground truncate">({s.displayName})</span>
+                            )}
+                          </>
                         )}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
@@ -503,19 +656,32 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
                             <Button
                               variant="ghost"
                               size="icon-xs"
+                              className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-primary"
+                              onClick={(e) => handleAliasDialogOpen(s, e)}
+                            >
+                              <Pencil className="size-3" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="text-xs">{t("im.renameChat")}</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
                               className={cn(
                                 "opacity-0 group-hover:opacity-100 transition-opacity",
-                                s.botEnabled !== false
+                                (s.botEnabled !== false && s.responseMode !== "disabled")
                                   ? "text-emerald-500 hover:text-emerald-600"
                                   : "text-destructive hover:text-destructive/80",
                               )}
                               onClick={(e) => handleToggleBot(s, e)}
                             >
-                              {s.botEnabled !== false ? <Bot className="size-4" /> : <BotOff className="size-4" />}
+                              {(s.botEnabled !== false && s.responseMode !== "disabled") ? <Bot className="size-4" /> : <BotOff className="size-4" />}
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent side="top" className="text-xs">
-                            {s.botEnabled !== false ? t("im.disableBot") : t("im.enableBot")}
+                            {(s.botEnabled !== false && s.responseMode !== "disabled") ? t("im.disableBot") : t("im.enableBot")}
                           </TooltipContent>
                         </Tooltip>
                         <Tooltip>
@@ -555,39 +721,98 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
                   {t("im.messages")} ({totalMessages})
                 </span>
                 <div className="flex items-center gap-1.5">
-                  {selectMode && selectedMsgIds.size > 0 && (
+                  {selectMode ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-[11px] px-2"
+                        onClick={() => { setSelectMode(false); setSelectedMsgIds(new Set()); }}
+                      >
+                        {t("im.cancelSelect")}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        className="h-6 text-[11px] px-2"
+                        disabled={selectedMsgIds.size === 0}
+                        onClick={() => setConfirmDialog({
+                          message: `确定要删除选中的 ${selectedMsgIds.size} 条消息吗？\n消息将被永久删除，不可恢复。`,
+                          onConfirm: handleDeleteMessages,
+                        })}
+                      >
+                        {t("im.confirmDeleteN", { count: selectedMsgIds.size })}
+                      </Button>
+                    </>
+                  ) : (
                     <Button
-                      variant="destructive"
+                      variant="outline"
                       size="sm"
                       className="h-6 text-[11px] px-2"
-                      onClick={() => setConfirmDialog({
-                        message: `确定要删除选中的 ${selectedMsgIds.size} 条消息吗？\n消息将被永久删除，不可恢复。`,
-                        onConfirm: handleDeleteMessages,
-                      })}
+                      onClick={() => setSelectMode(true)}
                     >
-                      {t("common.delete")} ({selectedMsgIds.size})
+                      {t("im.batchDelete")}
                     </Button>
                   )}
-                  <Button
-                    variant={selectMode ? "default" : "outline"}
-                    size="sm"
-                    className="h-6 text-[11px] px-2"
-                    onClick={() => { setSelectMode(!selectMode); setSelectedMsgIds(new Set()); }}
-                  >
-                    {selectMode ? t("common.cancel") : t("common.delete")}
-                  </Button>
                 </div>
               </div>
+              {/* Date range filter */}
+              <div className="flex items-center gap-2 px-4 py-1.5 border-b">
+                <span className="text-[11px] text-muted-foreground shrink-0">{t("im.dateFrom")}</span>
+                <Input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="h-7 text-xs w-32"
+                />
+                <span className="text-[11px] text-muted-foreground shrink-0">{t("im.dateTo")}</span>
+                <Input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="h-7 text-xs w-32"
+                />
+                {(dateFrom || dateTo) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-[11px] px-2"
+                    onClick={() => { setDateFrom(""); setDateTo(""); }}
+                  >
+                    {t("im.clearFilter")}
+                  </Button>
+                )}
+              </div>
               {/* Messages list */}
-              <div className="flex-1 overflow-auto px-4 py-3 space-y-3">
-                {messages.map((msg, idx) => (
-                  <div key={msg.id ?? idx} className="flex gap-2">
+              <div ref={scrollContainerRef} className="flex-1 overflow-auto px-4 py-3 space-y-3">
+                {/* Top sentinel for infinite scroll */}
+                <div ref={topSentinelRef} className="h-px" />
+                {messages.length < totalMessages && (
+                  <div className="flex justify-center py-1">
+                    {loadingMore && <Loader2 className="animate-spin size-4 text-muted-foreground" />}
+                  </div>
+                )}
+                {messages.map((msg, idx) => {
+                  const curDate = msg.timestamp ? new Date(msg.timestamp).toLocaleDateString() : "";
+                  const prevDate = idx > 0 && messages[idx - 1].timestamp
+                    ? new Date(messages[idx - 1].timestamp).toLocaleDateString()
+                    : null;
+                  const showDateLine = curDate && (!prevDate || curDate !== prevDate);
+                  return (
+                  <div key={msg.id ?? idx}>
+                  {showDateLine && (
+                    <div className="flex items-center gap-3 py-2">
+                      <div className="flex-1 h-px bg-border" />
+                      <span className="text-[11px] text-muted-foreground whitespace-nowrap">{curDate}</span>
+                      <div className="flex-1 h-px bg-border" />
+                    </div>
+                  )}
+                  <div className="flex gap-2">
                     {selectMode && msg.id != null && (
-                      <input
-                        type="checkbox"
-                        className="mt-1.5 shrink-0 accent-primary size-3.5"
+                      <Checkbox
                         checked={selectedMsgIds.has(msg.id)}
-                        onChange={() => toggleMsgSelect(msg.id!)}
+                        onCheckedChange={() => toggleMsgSelect(msg.id!)}
+                        className="mt-1.5 shrink-0"
                       />
                     )}
                     <div className="flex-1 min-w-0">
@@ -616,17 +841,11 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
                       </div>
                     </div>
                   </div>
-                ))}
+                  </div>
+                  );
+                })}
                 {messages.length === 0 && (
                   <div className="px-4 py-4 text-center text-xs text-muted-foreground">{t("im.noMessages")}</div>
-                )}
-                {messages.length < totalMessages && (
-                  <div className="flex justify-center py-2">
-                    <Button variant="ghost" size="sm" className="text-xs" onClick={handleLoadMore} disabled={loadingMore}>
-                      {loadingMore ? <Loader2 className="animate-spin size-3 mr-1" /> : null}
-                      {loadingMore ? t("common.loading") : `${t("im.messages")} (${messages.length}/${totalMessages})`}
-                    </Button>
-                  </div>
                 )}
               </div>
             </div>
@@ -635,71 +854,139 @@ function MessagesTab({ serviceRunning, apiBase }: { serviceRunning: boolean; api
       </div>
 
       <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
+
+      {/* Alias edit dialog */}
+      <AlertDialog open={!!aliasDialogSession} onOpenChange={(open) => { if (!open) setAliasDialogSession(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("im.renameChat")}</AlertDialogTitle>
+          </AlertDialogHeader>
+          <div className="px-1 py-2 space-y-3">
+            <div className="text-xs text-muted-foreground">
+              {aliasDialogSession?.chatType === "group"
+                ? (aliasDialogSession.chatName || aliasDialogSession.chatId || "")
+                : (aliasDialogSession?.displayName || aliasDialogSession?.userId || aliasDialogSession?.chatId || "")}
+            </div>
+            <Input
+              autoFocus
+              value={aliasDialogValue}
+              onChange={(e) => setAliasDialogValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleAliasDialogSave(); }}
+              placeholder={t("im.aliasPlaceholder")}
+            />
+          </div>
+          <AlertDialogFooter>
+            {aliasDialogSession?.alias && (
+              <Button variant="outline" size="sm" onClick={handleAliasDialogClear} className="mr-auto">
+                {t("im.clearAlias")}
+              </Button>
+            )}
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={handleAliasDialogSave}>{t("common.confirm")}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
 
 // ─── Group Policy Tab ───────────────────────────────────────────────────
 
-type GroupInfo = { chatId: string; chatName: string; allowed: boolean };
+type GroupSessionInfo = {
+  sessionId: string;
+  chatId: string;
+  chatName: string;
+  alias: string | null;
+  responseMode: string | null;
+  botEnabled: boolean;
+};
 
-const GROUP_MODES = ["always", "mention_only", "smart", "allowlist", "disabled"] as const;
+const RESPONSE_MODES = [
+  { value: "global", labelKey: "im.responseMode_global" },
+  { value: "mention_only", labelKey: "im.responseMode_mention_only" },
+  { value: "always", labelKey: "im.responseMode_always" },
+  { value: "disabled", labelKey: "im.responseMode_disabled" },
+] as const;
 
 function GroupPolicyTab({ apiBase }: { apiBase: string }) {
   const { t } = useTranslation();
-  const [channels, setChannels] = useState<{ channel: string; name: string }[]>([]);
+  const [channels, setChannels] = useState<IMChannel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null);
-  const [mode, setMode] = useState("mention_only");
-  const [allowlist, setAllowlist] = useState<string[]>([]);
-  const [groups, setGroups] = useState<GroupInfo[]>([]);
-  const [saving, setSaving] = useState(false);
+  const [groupSessions, setGroupSessions] = useState<GroupSessionInfo[]>([]);
+  const [savingChat, setSavingChat] = useState<string | null>(null);
 
   const fetchChannels = useCallback(async () => {
     try {
       const res = await safeFetch(`${apiBase}/api/im/channels`);
       const data = await res.json();
-      setChannels((data.channels || []).map((c: any) => ({ channel: c.channel, name: c.name || c.channel })));
+      setChannels(data.channels || []);
     } catch { /* ignore */ }
   }, [apiBase]);
 
   useEffect(() => { fetchChannels(); }, [fetchChannels]);
 
-  const fetchPolicy = useCallback(async (ch: string) => {
+  const fetchGroupSessions = useCallback(async (ch: string) => {
     try {
-      const res = await safeFetch(`${apiBase}/api/im/group-policy?channel=${encodeURIComponent(ch)}`);
+      const res = await safeFetch(`${apiBase}/api/im/sessions?channel=${encodeURIComponent(ch)}`);
       const data = await res.json();
-      setMode(data.mode || "mention_only");
-      setAllowlist(data.allowlist || []);
-      setGroups(data.groups || []);
+      const all: IMSession[] = data.sessions || [];
+      const groups = all
+        .filter((s) => s.chatType === "group")
+        .map((s) => ({
+          sessionId: s.sessionId,
+          chatId: s.chatId || "",
+          chatName: s.chatName || s.chatId || s.sessionId.slice(0, 12),
+          alias: s.alias || null,
+          responseMode: (s as any).responseMode ?? null,
+          botEnabled: s.botEnabled !== false,
+        }));
+      setGroupSessions(groups);
     } catch { /* ignore */ }
   }, [apiBase]);
 
   const handleSelectChannel = useCallback((ch: string) => {
     setSelectedChannel(ch);
-    fetchPolicy(ch);
-  }, [fetchPolicy]);
+    fetchGroupSessions(ch);
+  }, [fetchGroupSessions]);
 
-  const handleSave = useCallback(async () => {
+  useEffect(() => {
+    if (!IS_WEB) return;
+    return onWsEvent((event) => {
+      if (event === "im:bot_config_changed" && selectedChannel) {
+        fetchGroupSessions(selectedChannel);
+      }
+    });
+  }, [selectedChannel, fetchGroupSessions]);
+
+  const handleSetMode = useCallback(async (g: GroupSessionInfo, mode: string) => {
     if (!selectedChannel) return;
-    setSaving(true);
+    setSavingChat(g.chatId);
+    const apiMode = mode === "global" ? null : mode;
+    setGroupSessions((prev) =>
+      prev.map((x) => x.chatId === g.chatId ? { ...x, responseMode: apiMode } : x),
+    );
     try {
-      await safeFetch(`${apiBase}/api/im/group-policy`, {
+      await safeFetch(`${apiBase}/api/im/bot-config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channel: selectedChannel, mode, allowlist }),
+        body: JSON.stringify({
+          channel: selectedChannel,
+          chat_id: g.chatId,
+          user_id: "*",
+          enabled: mode !== "disabled",
+          response_mode: apiMode,
+        }),
       });
+      await new Promise((r) => setTimeout(r, 800));
     } catch { /* ignore */ }
-    setSaving(false);
-  }, [apiBase, selectedChannel, mode, allowlist]);
+    setSavingChat(null);
+  }, [apiBase, selectedChannel]);
 
-  const toggleGroup = useCallback((chatId: string) => {
-    setAllowlist((prev) =>
-      prev.includes(chatId) ? prev.filter((id) => id !== chatId) : [...prev, chatId],
-    );
-    setGroups((prev) =>
-      prev.map((g) => g.chatId === chatId ? { ...g, allowed: !g.allowed } : g),
-    );
-  }, []);
+  const getChannelDisplayName = useCallback((ch: IMChannel): string => {
+    const key = `status.${(ch.channel || "").toLowerCase()}`;
+    const translated = t(key);
+    return translated && translated !== key ? translated : (ch.name || ch.channel);
+  }, [t]);
 
   return (
     <div className="flex h-full">
@@ -710,95 +997,69 @@ function GroupPolicyTab({ apiBase }: { apiBase: string }) {
         </div>
         <div className="px-1.5 space-y-0.5">
           {channels.map((ch) => (
-            <div
+            <button
               key={ch.channel}
               className={cn(
-                "rounded-lg px-2.5 py-2 text-[13px] cursor-pointer select-none transition-colors",
-                selectedChannel === ch.channel ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+                "flex w-full items-center gap-1.5 rounded-lg px-2.5 py-2 text-[13px] transition-colors cursor-pointer select-none",
+                selectedChannel === ch.channel
+                  ? "bg-accent text-accent-foreground"
+                  : "hover:bg-accent/50",
               )}
               onClick={() => handleSelectChannel(ch.channel)}
-              role="button" tabIndex={0}
             >
-              {ch.name}
-            </div>
+              {ch.status === "online" ? <DotGreen /> : <DotGray />}
+              {(IM_LOGO_MAP[(ch.channel_type || "").toLowerCase()] || IM_LOGO_MAP[(ch.channel || "").toLowerCase()])?.({ size: 14 })}
+              <span className="font-semibold truncate">{getChannelDisplayName(ch)}</span>
+            </button>
           ))}
         </div>
       </div>
 
-      {/* Right: policy config */}
+      {/* Right: per-group mode config */}
       <div className="flex-1 min-w-0 overflow-y-auto p-4">
         {!selectedChannel ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm">
             <IconUsers size={40} />
             <p className="mt-2">{t("im.noChannel")}</p>
           </div>
+        ) : groupSessions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm">
+            <IconUsers size={40} />
+            <p className="mt-2">{t("im.groupAllowlistEmpty")}</p>
+          </div>
         ) : (
-          <div className="space-y-6 max-w-xl">
-            {/* Mode selector */}
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold">{t("im.groupPolicyDesc")}</h3>
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                size="sm"
-                value={mode}
-                onValueChange={(v) => { if (v) setMode(v); }}
-                className="flex flex-wrap gap-1 [&_[data-state=on]]:bg-primary [&_[data-state=on]]:text-primary-foreground"
-              >
-                {GROUP_MODES.map((m) => (
-                  <ToggleGroupItem key={m} value={m} className="text-xs">
-                    {t(`im.groupMode_${m}`)}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-              {(mode === "always" || mode === "smart") && (
-                <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
-                  {t(`im.groupModeHint_${mode}`)}
-                </p>
-              )}
-            </div>
-
-            {/* Allowlist editor */}
-            {mode === "allowlist" && (
-              <div className="space-y-2">
-                <h3 className="text-sm font-semibold">{t("im.groupAllowlistTitle")}</h3>
-                <p className="text-xs text-muted-foreground">{t("im.groupAllowlistDesc")}</p>
-                {groups.length === 0 ? (
-                  <p className="text-xs text-muted-foreground italic py-4 text-center">{t("im.groupAllowlistEmpty")}</p>
-                ) : (
-                  <div className="space-y-1">
-                    {groups.map((g) => (
-                      <div
-                        key={g.chatId}
-                        className="flex items-center justify-between rounded-lg border px-3 py-2"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <IconUsers size={14} className="shrink-0 text-muted-foreground" />
-                          <span className="text-sm truncate">{g.chatName || g.chatId}</span>
-                          {g.chatName && (
-                            <span className="text-[11px] text-muted-foreground truncate">({g.chatId})</span>
-                          )}
-                        </div>
-                        <Button
-                          variant={g.allowed ? "default" : "outline"}
-                          size="sm"
-                          className="h-6 text-xs shrink-0"
-                          onClick={() => toggleGroup(g.chatId)}
-                        >
-                          {g.allowed ? t("im.groupAllowed") : t("im.groupDenied")}
-                        </Button>
-                      </div>
-                    ))}
+          <div className="space-y-2 max-w-2xl">
+            <p className="text-xs text-muted-foreground mb-3">{t("im.groupPolicyDesc")}</p>
+            {groupSessions.map((g) => (
+              <div key={g.chatId} className="flex items-center justify-between rounded-lg border px-3 py-2.5 gap-3">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <IconUsers size={14} className="shrink-0 text-muted-foreground" />
+                  <div className="min-w-0">
+                    <span className={cn("text-sm font-medium truncate block", g.alias && "text-primary")}>{g.alias || g.chatName}</span>
+                    {(g.alias || g.chatName !== g.chatId) && (
+                      <span className="text-[11px] text-muted-foreground truncate block">{g.alias ? g.chatName : g.chatId}</span>
+                    )}
                   </div>
-                )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {savingChat === g.chatId && <Loader2 className="animate-spin size-3.5 text-muted-foreground" />}
+                  <ToggleGroup
+                    type="single"
+                    variant="outline"
+                    size="sm"
+                    value={g.responseMode || "global"}
+                    onValueChange={(v) => handleSetMode(g, v)}
+                    className="[&_[data-state=on]]:bg-primary [&_[data-state=on]]:text-primary-foreground"
+                  >
+                    {RESPONSE_MODES.map((m) => (
+                      <ToggleGroupItem key={m.value} value={m.value} className="text-[11px] h-6 px-2">
+                        {t(m.labelKey)}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
+                </div>
               </div>
-            )}
-
-            {/* Save button */}
-            <Button onClick={handleSave} disabled={saving} className="w-full">
-              {saving ? <Loader2 className="animate-spin size-4 mr-2" /> : null}
-              {saving ? t("topbar.saving") : t("common.save")}
-            </Button>
+            ))}
           </div>
         )}
       </div>

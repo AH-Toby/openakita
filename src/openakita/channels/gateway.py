@@ -859,6 +859,9 @@ class MessageGateway:
         from .bot_config import BotConfigStore
         self.bot_config = BotConfigStore()
 
+        from .chat_aliases import ChatAliasStore
+        self.chat_aliases = ChatAliasStore()
+
         # 注册的适配器 {channel_name: adapter}
         self._adapters: dict[str, ChannelAdapter] = {}
 
@@ -1274,8 +1277,20 @@ class MessageGateway:
                 return ("switch", target)
         return None
 
-    def _get_group_response_mode(self, channel: str) -> GroupResponseMode:
-        """获取群聊响应模式（Per-Bot 配置 > 全局配置 > 默认值）"""
+    def _get_group_response_mode(
+        self, channel: str, chat_id: str = "", user_id: str = "*"
+    ) -> GroupResponseMode:
+        """获取群聊响应模式。
+
+        优先级: per-chat bot_config > per-bot adapter > 全局 settings > 默认 MENTION_ONLY
+        """
+        if chat_id and hasattr(self, "bot_config"):
+            per_chat = self.bot_config.get_response_mode(channel, chat_id, user_id)
+            if per_chat:
+                try:
+                    return GroupResponseMode(per_chat)
+                except ValueError:
+                    pass
         adapter = self._adapters.get(channel)
         per_bot = getattr(adapter, "_group_response_mode", None)
         if per_bot:
@@ -1791,7 +1806,7 @@ class MessageGateway:
 
                 # 群聊响应模式过滤（防止未 @ 的群消息通过中断路径注入上下文）
                 if message.chat_type == "group" and not message.is_direct_message:
-                    _irq_mode = self._get_group_response_mode(message.channel)
+                    _irq_mode = self._get_group_response_mode(message.channel, message.chat_id, message.user_id)
                     if _irq_mode == GroupResponseMode.MENTION_ONLY and not message.is_mentioned:
                         _is_stop_or_skip = self.agent_handler and self.agent_handler.classify_interrupt(user_text) in ("stop", "skip")
                         if not _is_stop_or_skip:
@@ -2167,7 +2182,7 @@ class MessageGateway:
         try:
             # ==================== 群聊响应过滤 ====================
             if message.chat_type == "group" and not message.is_direct_message:
-                mode = self._get_group_response_mode(message.channel)
+                mode = self._get_group_response_mode(message.channel, message.chat_id, message.user_id)
 
                 if mode == GroupResponseMode.DISABLED:
                     logger.debug(f"[IM] Group message ignored (disabled): {user_text[:50]}")

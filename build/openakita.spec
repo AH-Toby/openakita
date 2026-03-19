@@ -48,6 +48,8 @@ hidden_imports_core = [
     "openakita.channels.registry",
     "openakita.channels.group_response",
     "openakita.channels.policy",
+    "openakita.channels.bot_config",
+    "openakita.channels.chat_aliases",
     "openakita.channels.retry",
     "openakita.channels.text_splitter",
     "openakita.channels.media_parser",

@@ -1152,14 +1152,25 @@ class WeWorkWsAdapter(ChannelAdapter):
         self._thinking_tasks[req_id] = task
 
     async def _thinking_counter_loop(self, req_id: str, stream_id: str) -> None:
-        """Send periodic 'waiting N s' updates until cancelled."""
+        """Send periodic 'waiting N s' updates until cancelled.
+
+        Sends a stream update every SEND_INTERVAL seconds (not every second)
+        to avoid hitting WeCom's undocumented per-stream rate/count limits.
+        Tolerates up to MAX_SEND_FAILURES consecutive send failures before
+        giving up.
+        """
+        SEND_INTERVAL = 5
+        MAX_SEND_FAILURES = 3
         seconds = 1
+        consecutive_failures = 0
         try:
             while self._ws and req_id in self._pre_streams:
                 await asyncio.sleep(1.0)
                 seconds += 1
                 if req_id not in self._pre_streams:
                     break
+                if seconds % SEND_INTERVAL != 0:
+                    continue
                 # D1: respect intermediate stream message limit
                 count = self._stream_msg_count.get(stream_id, 0)
                 if count >= MAX_INTERMEDIATE_STREAM_MSGS:
@@ -1174,8 +1185,13 @@ class WeWorkWsAdapter(ChannelAdapter):
                     await self._send_reply_with_ack(req_id, body, CMD_RESPONSE)
                     self._stream_msg_count[stream_id] = count + 1
                     self._last_stream_sent[stream_id] = time.time()
-                except Exception:
-                    break
+                    consecutive_failures = 0
+                except Exception as e:
+                    consecutive_failures += 1
+                    logger.debug(f"[thinking] Counter send failed (sec={seconds}): {e}")
+                    if consecutive_failures >= MAX_SEND_FAILURES:
+                        logger.debug(f"[thinking] {MAX_SEND_FAILURES} consecutive failures, stopping counter")
+                        break
         except asyncio.CancelledError:
             pass
         finally:

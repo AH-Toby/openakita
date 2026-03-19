@@ -1119,23 +1119,37 @@ class MemoryStorage:
         session_id: str,
         limit: int = 50,
         offset: int = 0,
+        date_from: str | None = None,
+        date_to: str | None = None,
     ) -> tuple[list[dict], int]:
-        """Paginated query for conversation_turns. Returns (rows, total)."""
+        """Paginated query for conversation_turns. Returns (rows, total).
+
+        Optional date_from / date_to (ISO date strings, e.g. '2026-03-19')
+        restrict results by the timestamp column.
+        """
         if not self._conn:
             return [], 0
         with self._lock:
             try:
+                where = "session_id = ?"
+                params: list = [session_id]
+                if date_from:
+                    where += " AND timestamp >= ?"
+                    params.append(date_from)
+                if date_to:
+                    where += " AND timestamp <= ?"
+                    params.append(date_to + "T23:59:59.999999")
                 total_row = self._conn.execute(
-                    "SELECT COUNT(*) FROM conversation_turns WHERE session_id = ?",
-                    (session_id,),
+                    f"SELECT COUNT(*) FROM conversation_turns WHERE {where}",
+                    params,
                 ).fetchone()
                 total = total_row[0] if total_row else 0
                 cur = self._conn.execute(
                     "SELECT id, session_id, turn_index, role, content, "
                     "tool_calls, tool_results, timestamp, token_estimate "
-                    "FROM conversation_turns WHERE session_id = ? "
+                    f"FROM conversation_turns WHERE {where} "
                     "ORDER BY turn_index ASC LIMIT ? OFFSET ?",
-                    (session_id, limit, offset),
+                    params + [limit, offset],
                 )
                 rows = self._rows_to_dicts(cur, json_fields=["tool_calls", "tool_results"])
                 return rows, total

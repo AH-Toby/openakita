@@ -51,6 +51,7 @@ type IMChannel = {
   chat_name?: string;
   chat_type?: string;
   display_name?: string;
+  alias?: string;
 };
 
 // Frontend-only schedule mode; maps to backend trigger_type (once/interval/cron)
@@ -142,7 +143,7 @@ function shortChatId(chatId: string): string {
 function formatChannelLabel(channelId: string, chatId: string, ch?: IMChannel): string {
   if (ch) {
     const typeIcon = ch.chat_type === "group" ? "👥 " : "💬 ";
-    const name = ch.chat_name || shortChatId(ch.chat_id);
+    const name = ch.alias || ch.chat_name || shortChatId(ch.chat_id);
     return typeIcon + name;
   }
   const platform = extractPlatformLabel(channelId);
