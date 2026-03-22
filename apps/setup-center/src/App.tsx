@@ -2678,6 +2678,7 @@ export function App() {
         apiBaseUrl={apiBaseUrl}
         onRequestRestart={restartService}
         wizardMode={wizardMode}
+        multiAgentEnabled={multiAgentEnabled}
       />
     );
   }

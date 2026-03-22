@@ -132,6 +132,12 @@ class ToolExecutor:
     # 长时间运行工具的硬超时（秒），防止工具卡死拖垮整个 agent 循环
     _TOOL_HARD_TIMEOUT: int = 120
 
+    # 委派类工具由 Orchestrator 的 idle_timeout / hard_timeout 管控超时，
+    # ToolExecutor 不再施加硬超时，避免活跃的子 Agent 被误杀
+    _DELEGATION_TOOLS: frozenset[str] = frozenset({
+        "delegate_to_agent", "delegate_parallel", "spawn_agent",
+    })
+
     def get_handler_name(self, tool_name: str) -> str | None:
         """获取工具对应的 handler 名称"""
         try:
@@ -148,6 +154,9 @@ class ToolExecutor:
         """
         执行工具协程，同时监听 state.cancel_event 和硬超时。
         如果用户取消或超时，取消工具协程并返回错误信息。
+
+        委派类工具（delegate_to_agent 等）跳过硬超时，
+        由 Orchestrator 的 progress-aware timeout 管控。
         """
         tool_task = asyncio.ensure_future(coro)
 
@@ -155,9 +164,14 @@ class ToolExecutor:
         if state and hasattr(state, "cancel_event") and state.cancel_event:
             cancel_future = asyncio.ensure_future(state.cancel_event.wait())
 
-        timeout_task = asyncio.ensure_future(asyncio.sleep(self._TOOL_HARD_TIMEOUT))
+        skip_timeout = tool_name in self._DELEGATION_TOOLS
+        timeout_task: asyncio.Future | None = None
+        if not skip_timeout:
+            timeout_task = asyncio.ensure_future(asyncio.sleep(self._TOOL_HARD_TIMEOUT))
 
-        wait_set: set[asyncio.Future] = {tool_task, timeout_task}
+        wait_set: set[asyncio.Future] = {tool_task}
+        if timeout_task is not None:
+            wait_set.add(timeout_task)
         if cancel_future:
             wait_set.add(cancel_future)
 
@@ -174,7 +188,10 @@ class ToolExecutor:
                 logger.warning(f"[ToolExecutor] Tool '{tool_name}' cancelled by user")
             else:
                 reason = f"工具执行超时 ({self._TOOL_HARD_TIMEOUT}s)"
-                logger.error(f"[ToolExecutor] Tool '{tool_name}' timed out after {self._TOOL_HARD_TIMEOUT}s")
+                logger.error(
+                    f"[ToolExecutor] Tool '{tool_name}' timed out "
+                    f"after {self._TOOL_HARD_TIMEOUT}s"
+                )
 
             tool_task.cancel()
             try:
@@ -186,7 +203,7 @@ class ToolExecutor:
 
         finally:
             for t in [tool_task, timeout_task]:
-                if not t.done():
+                if t is not None and not t.done():
                     t.cancel()
                     try:
                         await t

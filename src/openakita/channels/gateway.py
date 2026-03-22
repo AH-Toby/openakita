@@ -3242,8 +3242,14 @@ class MessageGateway:
     # 分片间发送间隔（秒），避免触发平台限流
     _SPLIT_SEND_INTERVAL: dict[str, float] = {
         "telegram": 0.5,
+        "wechat":   1.5,
     }
     _DEFAULT_SPLIT_INTERVAL = 0.15
+
+    # 进度消息节流间隔（秒）— 不支持卡片更新的平台需要更高的节流间隔
+    _CHANNEL_PROGRESS_THROTTLE: dict[str, float] = {
+        "wechat": 8.0,
+    }
 
     @staticmethod
     def _split_text(text: str, max_length: int) -> list[str]:
@@ -3733,7 +3739,13 @@ class MessageGateway:
                 return
 
         session_key = session.session_key
-        throttle = self._progress_throttle_seconds if throttle_seconds is None else throttle_seconds
+        if throttle_seconds is not None:
+            throttle = throttle_seconds
+        else:
+            base_ch = session.channel.split(":")[0].split("_")[0]
+            throttle = self._CHANNEL_PROGRESS_THROTTLE.get(
+                base_ch, self._progress_throttle_seconds,
+            )
 
         buf = self._progress_buffers.setdefault(session_key, [])
         if buf and buf[-1] == text:

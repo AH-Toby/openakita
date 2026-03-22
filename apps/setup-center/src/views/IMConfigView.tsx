@@ -20,6 +20,7 @@ type IMConfigViewProps = {
   apiBaseUrl?: string;
   onRequestRestart?: () => void;
   wizardMode?: boolean;
+  multiAgentEnabled?: boolean;
 };
 
 const DEFAULT_API = "http://127.0.0.1:18900";
@@ -37,7 +38,7 @@ const PLATFORMS = [
 export function IMConfigView(props: IMConfigViewProps) {
   const {
     envDraft, setEnvDraft, busy = null, currentWorkspaceId, venvDir = "",
-    apiBaseUrl, onRequestRestart, wizardMode = false,
+    apiBaseUrl, onRequestRestart, wizardMode = false, multiAgentEnabled,
   } = props;
   const { t } = useTranslation();
 
@@ -154,7 +155,7 @@ export function IMConfigView(props: IMConfigViewProps) {
       {!wizardMode && (
         <BotConfigTab
           apiBase={apiBaseUrl ?? DEFAULT_API}
-          multiAgentEnabled={true}
+          multiAgentEnabled={multiAgentEnabled}
           onRequestRestart={onRequestRestart}
           venvDir={venvDir}
           apiBaseUrl={apiBaseUrl}

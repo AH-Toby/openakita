@@ -89,6 +89,10 @@ CONFIG_CACHE_MAX_RETRY_S = 3600.0
 DEDUP_TTL_S = 600  # 10 min
 DEDUP_MAX_SIZE = 500
 
+SEND_MIN_INTERVAL_S = 1.5
+SEND_RATE_LIMIT_RETRIES = 3
+SEND_RATE_LIMIT_BASE_DELAY_S = 3.0
+
 # MessageItemType
 ITEM_NONE = 0
 ITEM_TEXT = 1
@@ -309,6 +313,9 @@ class WeChatAdapter(ChannelAdapter):
         # 连续失败计数
         self._consecutive_failures: int = 0
 
+        # 发送限流 (user_id → 上次发送时间戳)
+        self._last_send_ts: dict[str, float] = {}
+
         # 统计指标
         self._msg_count: int = 0
         self._send_count: int = 0
@@ -401,6 +408,43 @@ class WeChatAdapter(ChannelAdapter):
         )
         resp.raise_for_status()
         return resp.json()
+
+    async def _rate_limit_wait(self, user_id: str) -> None:
+        """Enforce minimum interval between sends to the same user."""
+        now = time.time()
+        last = self._last_send_ts.get(user_id, 0.0)
+        gap = now - last
+        if gap < SEND_MIN_INTERVAL_S:
+            await asyncio.sleep(SEND_MIN_INTERVAL_S - gap)
+        self._last_send_ts[user_id] = time.time()
+
+    def _check_send_response(self, resp: dict, *, action: str = "sendmessage") -> None:
+        """检查 sendmessage / sendtyping 等 API 响应中的业务层错误。
+
+        iLink Bot API 在 HTTP 200 下可能返回 {"ret": -14, "errmsg": "..."}，
+        如果不检查会导致消息静默丢失。
+        """
+        ret = resp.get("ret")
+        errcode = resp.get("errcode")
+
+        is_error = (ret not in (None, 0)) or (errcode not in (None, 0))
+        if not is_error:
+            return
+
+        code = ret if ret not in (None, 0) else errcode
+        errmsg = resp.get("errmsg", "")
+
+        if code == SESSION_EXPIRED_ERRCODE:
+            self._pause_session()
+            raise RuntimeError(
+                f"WeChat {action} failed: session expired "
+                f"(ret={ret}, errcode={errcode}, errmsg={errmsg})"
+            )
+
+        raise RuntimeError(
+            f"WeChat {action} failed: ret={ret}, errcode={errcode}, "
+            f"errmsg={errmsg}"
+        )
 
     # ==================== 长轮询 ====================
 
@@ -725,10 +769,7 @@ class WeChatAdapter(ChannelAdapter):
             raise RuntimeError("WeChat session paused")
 
         chat_id = message.chat_id
-        ctx_token = (
-            message.metadata.get("context_token")
-            or self._context_tokens.get(chat_id, "")
-        )
+        ctx_token = self._resolve_context_token(chat_id, message.metadata)
         if not ctx_token:
             logger.warning(
                 f"{self.channel_name}: no context_token for {chat_id}, message may fail"
@@ -759,6 +800,21 @@ class WeChatAdapter(ChannelAdapter):
             return ""
         return await self._send_text(chat_id, plain, ctx_token)
 
+    def _resolve_context_token(
+        self, chat_id: str, metadata: dict | None = None,
+    ) -> str:
+        """返回最新可用的 context_token。
+
+        优先级: 最新缓存（来自最近一次 getUpdates） > 消息 metadata 中的原始 token。
+        长耗时任务中原始 token 可能已过期，缓存中的更可能有效。
+        """
+        cached = self._context_tokens.get(chat_id, "")
+        meta_token = (metadata or {}).get("context_token", "")
+
+        if cached:
+            return cached
+        return meta_token
+
     async def _send_text(self, to: str, text: str, ctx_token: str = "") -> str:
         client_id = f"openakita-wechat-{uuid.uuid4().hex[:12]}"
         body = {
@@ -772,9 +828,31 @@ class WeChatAdapter(ChannelAdapter):
                 "context_token": ctx_token or None,
             }
         }
-        await self._api_post("ilink/bot/sendmessage", body)
+        for attempt in range(1, SEND_RATE_LIMIT_RETRIES + 1):
+            await self._rate_limit_wait(to)
+            resp = await self._api_post("ilink/bot/sendmessage", body)
+            try:
+                self._check_send_response(resp, action="sendmessage(text)")
+                break
+            except RuntimeError:
+                if resp.get("ret") == SESSION_EXPIRED_ERRCODE:
+                    raise
+                if attempt < SEND_RATE_LIMIT_RETRIES:
+                    delay = SEND_RATE_LIMIT_BASE_DELAY_S * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"{self.channel_name}: sendmessage(text) ret={resp.get('ret')}, "
+                        f"retry {attempt}/{SEND_RATE_LIMIT_RETRIES} after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    body["msg"]["client_id"] = f"openakita-wechat-{uuid.uuid4().hex[:12]}"
+                else:
+                    raise
         self._send_count += 1
-        return client_id
+        logger.info(
+            f"{self.channel_name}: text sent to={to}, "
+            f"len={len(text)}, client_id={body['msg']['client_id']}"
+        )
+        return body["msg"]["client_id"]
 
     async def _send_media_by_mime(
         self, chat_id: str, file_path: str, mime: str, *,
@@ -792,11 +870,10 @@ class WeChatAdapter(ChannelAdapter):
 
         # 构造媒体 item
         client_id = f"openakita-wechat-{uuid.uuid4().hex[:12]}"
+        aeskey_hex = uploaded["aeskey"]
         media_ref = {
             "encrypt_query_param": uploaded["download_param"],
-            "aes_key": base64.b64encode(
-                bytes.fromhex(uploaded["aeskey"])
-            ).decode(),
+            "aes_key": base64.b64encode(aeskey_hex.encode()).decode(),
             "encrypt_type": 1,
         }
 
@@ -804,6 +881,7 @@ class WeChatAdapter(ChannelAdapter):
             item = {
                 "type": ITEM_IMAGE,
                 "image_item": {
+                    "aeskey": aeskey_hex,
                     "media": media_ref,
                     "mid_size": uploaded["filesize_cipher"],
                 },
@@ -812,6 +890,7 @@ class WeChatAdapter(ChannelAdapter):
             item = {
                 "type": ITEM_VIDEO,
                 "video_item": {
+                    "aeskey": aeskey_hex,
                     "media": media_ref,
                     "video_size": uploaded["filesize_cipher"],
                 },
@@ -821,6 +900,7 @@ class WeChatAdapter(ChannelAdapter):
             item = {
                 "type": ITEM_FILE,
                 "file_item": {
+                    "aeskey": aeskey_hex,
                     "media": media_ref,
                     "file_name": fname,
                     "len": str(uploaded["filesize_raw"]),
@@ -838,18 +918,42 @@ class WeChatAdapter(ChannelAdapter):
                 "context_token": ctx_token or None,
             }
         }
-        await self._api_post("ilink/bot/sendmessage", body)
+        for attempt in range(1, SEND_RATE_LIMIT_RETRIES + 1):
+            await self._rate_limit_wait(chat_id)
+            resp = await self._api_post("ilink/bot/sendmessage", body)
+            try:
+                self._check_send_response(resp, action="sendmessage(media)")
+                break
+            except RuntimeError:
+                if resp.get("ret") == SESSION_EXPIRED_ERRCODE:
+                    raise
+                if attempt < SEND_RATE_LIMIT_RETRIES:
+                    delay = SEND_RATE_LIMIT_BASE_DELAY_S * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"{self.channel_name}: sendmessage(media) ret={resp.get('ret')}, "
+                        f"retry {attempt}/{SEND_RATE_LIMIT_RETRIES} after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    body["msg"]["client_id"] = f"openakita-wechat-{uuid.uuid4().hex[:12]}"
+                else:
+                    raise
         self._send_count += 1
-        return client_id
+        logger.info(
+            f"{self.channel_name}: media sent to={chat_id}, "
+            f"mime={mime}, file={Path(file_path).name}, client_id={body['msg']['client_id']}"
+        )
+        return body["msg"]["client_id"]
 
     async def send_file(self, chat_id: str, file_path: str, caption: str | None = None) -> str:
-        ctx_token = self._context_tokens.get(chat_id, "")
+        ctx_token = self._resolve_context_token(chat_id)
         mime = _guess_mime(file_path)
         return await self._send_media_by_mime(
             chat_id, file_path, mime, caption=caption or "", ctx_token=ctx_token,
         )
 
     # ==================== Typing ====================
+    # iLink Bot API 不支持通过同一 client_id 更新消息（API 按 client_id 去重），
+    # 因此无法实现"单气泡流式更新"。仅使用原生 typing 指示器。
 
     async def send_typing(self, chat_id: str, thread_id: str | None = None) -> None:
         ticket = await self._get_typing_ticket(chat_id)
