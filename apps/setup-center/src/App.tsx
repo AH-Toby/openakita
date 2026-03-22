@@ -2056,7 +2056,15 @@ export function App() {
           const channels = imData.channels || [];
           const h: Record<string, { status: string; error: string | null; lastCheckedAt: string | null }> = {};
           for (const c of channels) {
-            h[c.channel || c.name] = { status: c.status || "unknown", error: c.error || null, lastCheckedAt: c.last_checked_at || null };
+            const key = c.channel || c.name;
+            const val = { status: c.status || "unknown", error: c.error || null, lastCheckedAt: c.last_checked_at || null };
+            h[key] = val;
+            const ctype = c.channel_type || key;
+            if (ctype !== key) {
+              if (!h[ctype] || (val.status === "online" && h[ctype]?.status !== "online")) {
+                h[ctype] = val;
+              }
+            }
           }
           if (Object.keys(h).length > 0) setImHealth(h);
         } catch { /* IM status is optional */ }
@@ -2138,7 +2146,15 @@ export function App() {
           const channels = imData.channels || [];
           const h: Record<string, { status: string; error: string | null; lastCheckedAt: string | null }> = {};
           for (const c of channels) {
-            h[c.channel || c.name] = { status: c.status || "unknown", error: c.error || null, lastCheckedAt: c.last_checked_at || null };
+            const key = c.channel || c.name;
+            const val = { status: c.status || "unknown", error: c.error || null, lastCheckedAt: c.last_checked_at || null };
+            h[key] = val;
+            const ctype = c.channel_type || key;
+            if (ctype !== key) {
+              if (!h[ctype] || (val.status === "online" && h[ctype]?.status !== "online")) {
+                h[ctype] = val;
+              }
+            }
           }
           if (Object.keys(h).length > 0) setImHealth(h);
         } catch { /* ignore - IM status is optional */ }

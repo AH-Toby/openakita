@@ -430,7 +430,7 @@
     "imTitle": "IM Channels",
     "imHint": "Manage IM bots to connect with messaging platforms",
     "imPlatformOverview": "Supported IM Platforms",
-    "imBotGuide": "Click \"Create Bot\" below to connect an IM platform. Each bot represents a platform bot instance — just fill in the credentials and it will connect automatically.",
+    "imBotGuide": "Click \"Guided Setup\" for step-by-step bot creation and connection. You can also use \"Create Bot\" for quick setup.",
     "imTabChannels": "Channel Config",
     "imTabBots": "Bot Config",
     "imChainPush": "Chain-of-Thought Progress Push",
@@ -1605,7 +1605,7 @@
     "groupModeHint_mention_only": "Only reply when @mentioned, safest option",
     "groupModeHint_smart": "AI decides whether to reply",
     "groupModeHint_always": "Reply to all messages in group (use with caution)",
-    "groupModeHint": "Requires enabling \"Receive all group messages\" in Feishu Developer Console → App → Bot → Message receiving mode, otherwise the bot only receives @mentions"
+    "groupModeHint": "Requires enabling the sensitive permission \"Get all group messages\" (im:message.group_msg) under App → Bot → Permissions, otherwise the bot only receives @mentions"
   },
   "qqbot": {
     "qrScanCreate": "Scan QR to create bot",

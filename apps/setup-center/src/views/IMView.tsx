@@ -1407,13 +1407,13 @@ export function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, ven
         <Button variant="outline" size="icon-sm" onClick={fetchBots} disabled={loading}>
           <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
         </Button>
-        <Button size="sm" variant="outline" className="border-primary/40 text-primary hover:bg-primary/5 hover:text-primary" onClick={() => setWizardOpen(true)}>
-          <Sparkles size={14} />
-          {t("im.wizardGuide")}
-        </Button>
-        <Button size="sm" onClick={openCreate}>
+        <Button variant="outline" size="sm" onClick={openCreate}>
           <IconPlus size={14} />
           {t("im.createBot")}
+        </Button>
+        <Button size="sm" onClick={() => setWizardOpen(true)}>
+          <Sparkles size={14} />
+          {t("im.wizardGuide")}
         </Button>
       </div>
 
@@ -1429,7 +1429,7 @@ export function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, ven
                 !bot.enabled && "opacity-55"
               )}
             >
-              <div className="absolute top-2 right-2 flex gap-1">
+              <div className="flex items-center justify-between mb-2">
                 <Badge variant="secondary" className="text-[10px] gap-1 px-1.5 py-0">
                   {IM_LOGO_MAP[bot.type]?.({ size: 12 })}
                   {t(BOT_TYPE_LABEL_KEYS[bot.type] || "", { defaultValue: bot.type })}
@@ -1438,12 +1438,11 @@ export function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, ven
                   {bot.enabled ? t("im.botEnabled") : t("im.botDisabled")}
                 </Badge>
               </div>
-
-              <div className="flex items-center gap-2.5 mt-0.5 mb-1.5">
-                <span className="text-2xl leading-none">{agentProfile?.icon || "🤖"}</span>
+              <div className="flex items-center gap-2.5 mb-1.5">
+                <span className="text-2xl leading-none shrink-0">{agentProfile?.icon || "🤖"}</span>
                 <div className="min-w-0">
-                  <div className="font-bold text-sm truncate">{bot.name || bot.id}</div>
-                  <div className="text-[11px] text-muted-foreground/45 font-mono">{bot.id}</div>
+                  <div className="font-bold text-sm truncate" title={bot.name || bot.id}>{bot.name || bot.id}</div>
+                  <div className="text-[11px] text-muted-foreground/45 font-mono truncate" title={bot.id}>{bot.id}</div>
                 </div>
               </div>
               <p className="text-xs text-muted-foreground mb-2.5">
@@ -2381,6 +2380,9 @@ function BotCreationWizard({
                           <ToggleGroupItem key={m} value={m}>{t(`feishu.groupMode_${m}`)}</ToggleGroupItem>
                         ))}
                       </ToggleGroup>
+                      {(bot.credentials.group_response_mode === "smart" || bot.credentials.group_response_mode === "always") && (
+                        <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">{t("feishu.groupModeHint")}</p>
+                      )}
                     </div>
                   </div>
                 )}

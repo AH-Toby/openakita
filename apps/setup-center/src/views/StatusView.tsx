@@ -473,14 +473,22 @@ export function StatusView(props: StatusViewProps) {
             const ih = imHealth[channelId];
             const isOnline = ih && (ih.status === "healthy" || ih.status === "online");
             const effectiveEnabled = ih ? true : c.enabled;
-            const dot = !effectiveEnabled ? "disabled" : ih ? (isOnline ? "healthy" : "unhealthy") : c.ok ? "unknown" : "degraded";
+            const serviceRunning = serviceStatus?.running;
+            const dot = !effectiveEnabled ? "disabled" : ih ? (isOnline ? "healthy" : "unhealthy") : c.ok ? "unknown" : serviceRunning ? "unknown" : "degraded";
             const LogoComp = IM_LOGO_MAP[channelId];
+            const label = !effectiveEnabled
+              ? t("status.disabled")
+              : ih
+                ? (isOnline ? t("status.online") : t("status.offline"))
+                : c.ok
+                  ? t("status.configured")
+                  : serviceRunning ? "—" : t("status.keyMissing");
             return (
               <div key={c.k} className="imStatusRow">
                 <span className={"healthDot " + dot} />
                 {LogoComp && <span style={{ display: "inline-flex", flexShrink: 0 }}>{LogoComp({ size: 16 })}</span>}
                 <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{c.name}</span>
-                <span className="imStatusLabel">{!effectiveEnabled ? t("status.disabled") : ih ? (isOnline ? t("status.online") : t("status.offline")) : c.ok ? t("status.configured") : t("status.keyMissing")}</span>
+                <span className="imStatusLabel">{label}</span>
               </div>
             );
           })}

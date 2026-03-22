@@ -25,14 +25,21 @@ async function onboardStart(
   venvDir?: string,
   apiBaseUrl?: string,
 ): Promise<Record<string, any>> {
+  if (apiBaseUrl) {
+    const res = await safeFetch(`${apiBaseUrl}/api/wechat/onboard/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    return res.json();
+  }
   if (IS_TAURI && venvDir) {
     const raw = await invoke<string>("openakita_wechat_onboard_start", {
       venvDir,
     });
     return JSON.parse(raw);
   }
-  const base = apiBaseUrl || "";
-  const res = await safeFetch(`${base}/api/wechat/onboard/start`, {
+  const res = await safeFetch(`/api/wechat/onboard/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
@@ -45,6 +52,14 @@ async function onboardPoll(
   venvDir?: string,
   apiBaseUrl?: string,
 ): Promise<Record<string, any>> {
+  if (apiBaseUrl) {
+    const res = await safeFetch(`${apiBaseUrl}/api/wechat/onboard/poll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ qrcode }),
+    });
+    return res.json();
+  }
   if (IS_TAURI && venvDir) {
     const raw = await invoke<string>("openakita_wechat_onboard_poll", {
       venvDir,
@@ -52,8 +67,7 @@ async function onboardPoll(
     });
     return JSON.parse(raw);
   }
-  const base = apiBaseUrl || "";
-  const res = await safeFetch(`${base}/api/wechat/onboard/poll`, {
+  const res = await safeFetch(`/api/wechat/onboard/poll`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ qrcode }),

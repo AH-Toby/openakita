@@ -26,14 +26,21 @@ async function onboardStart(
   venvDir: string,
   apiBaseUrl?: string,
 ): Promise<Record<string, any>> {
+  if (apiBaseUrl) {
+    const res = await safeFetch(`${apiBaseUrl}/api/qqbot/onboard/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    return res.json();
+  }
   if (IS_TAURI) {
     const raw = await invoke<string>("openakita_qqbot_onboard_start", {
       venvDir,
     });
     return JSON.parse(raw);
   }
-  const base = apiBaseUrl || "";
-  const res = await safeFetch(`${base}/api/qqbot/onboard/start`, {
+  const res = await safeFetch(`/api/qqbot/onboard/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
@@ -46,6 +53,14 @@ async function onboardPoll(
   sessionId: string,
   apiBaseUrl?: string,
 ): Promise<Record<string, any>> {
+  if (apiBaseUrl) {
+    const res = await safeFetch(`${apiBaseUrl}/api/qqbot/onboard/poll`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    return res.json();
+  }
   if (IS_TAURI) {
     const raw = await invoke<string>("openakita_qqbot_onboard_poll", {
       venvDir,
@@ -53,8 +68,7 @@ async function onboardPoll(
     });
     return JSON.parse(raw);
   }
-  const base = apiBaseUrl || "";
-  const res = await safeFetch(`${base}/api/qqbot/onboard/poll`, {
+  const res = await safeFetch(`/api/qqbot/onboard/poll`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId }),
@@ -67,6 +81,14 @@ async function onboardPollAndCreate(
   sessionId: string,
   apiBaseUrl?: string,
 ): Promise<Record<string, any>> {
+  if (apiBaseUrl) {
+    const res = await safeFetch(`${apiBaseUrl}/api/qqbot/onboard/poll-and-create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    return res.json();
+  }
   if (IS_TAURI) {
     const raw = await invoke<string>(
       "openakita_qqbot_onboard_poll_and_create",
@@ -74,8 +96,7 @@ async function onboardPollAndCreate(
     );
     return JSON.parse(raw);
   }
-  const base = apiBaseUrl || "";
-  const res = await safeFetch(`${base}/api/qqbot/onboard/poll-and-create`, {
+  const res = await safeFetch(`/api/qqbot/onboard/poll-and-create`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ session_id: sessionId }),

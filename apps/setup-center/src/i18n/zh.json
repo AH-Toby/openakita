@@ -430,7 +430,7 @@
     "imTitle": "IM 通道",
     "imHint": "管理 IM 机器人，接入各平台实现智能通讯",
     "imPlatformOverview": "支持的 IM 平台",
-    "imBotGuide": "点击下方「创建 Bot」按钮来接入 IM 平台。每个 Bot 对应一个平台的机器人实例，创建后填写对应平台的凭证即可自动连接。",
+    "imBotGuide": "推荐点击「引导创建」按钮，逐步引导你完成 IM 机器人的创建与接入。也可以点击「创建 Bot」快速创建。",
     "imTabChannels": "通道配置",
     "imTabBots": "Bot 配置",
     "imChainPush": "思维链进度推送",
@@ -1605,7 +1605,7 @@
     "groupModeHint_mention_only": "仅在被 @提及 时回复，最安全",
     "groupModeHint_smart": "AI 判断消息是否需要回复",
     "groupModeHint_always": "回复群内所有消息（慎用）",
-    "groupModeHint": "⚠ 需要在飞书开放平台 → 应用 → 机器人 → 消息接收模式 中开启「接收群聊中所有消息」，否则机器人只能收到 @消息"
+    "groupModeHint": "⚠ 需要在飞书开放平台 → 应用 → 机器人 → 权限管理 中开启敏感权限「获取群组中所有消息」(im:message.group_msg)，否则机器人只能收到 @消息"
   },
   "qqbot": {
     "qrScanCreate": "扫码创建机器人",
